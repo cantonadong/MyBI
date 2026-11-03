@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:ev="http://www.w3.org/2001/xml-events" xmlns:xlink="http://www.w3.org/1999/xlink" baseProfile="full" height="24px" version="1.1" viewBox="0 0 24 24" width="24px">
+  <title>edit icon</title>
+  <desc>Editable vector UI design. All text and shapes are native SVG elements. No embedded bitmaps.</desc>
+  <defs/>
+  <g id="icon-edit-0-0" transform="translate(0,0) scale(1.0)">
+    <path d="M4 20l4.5-.8L20 7.7l-3.7-3.7L4.8 15.5 4 20z M14.6 5.7l3.7 3.7" fill="none" stroke="#182339" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/>
+  </g>
+</svg>

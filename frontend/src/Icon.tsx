@@ -1,0 +1,41 @@
+const paths: Record<string, string> = {
+  remove: 'M3 3 21 21M3 21 21 3',
+  copy: 'M9 8h11v13H9zM5 16H3V3h11v2',
+  publish: 'M12 16V3m-5 5 5-5 5 5M4 14v7h16v-7',
+  view: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zm13 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+  edit: 'm15 4 5 5M4 20l5-1L21 7l-5-5L4 14z',
+  delete: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
+  datasets: 'M4 6c0-4 16-4 16 0s-16 4-16 0Zm0 0v12c0 4 16 4 16 0V6M4 12c0 4 16 4 16 0',
+  report: 'M4 3h16v18H4zM8 16v-4m4 4V8m4 8v-6',
+  new: 'M14 3H5v18h14V8zM14 3v5h5M8 14h8m-4-4v8',
+  settings: 'm9 3-1 3-3 1-2 4 2 2v3l3 2 1 3h6l1-3 3-2v-3l2-2-2-4-3-1-1-3zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+  undo: 'M9 5 3 11l6 6M3 11h11a6 6 0 0 1 6 6',
+  redo: 'm15 5 6 6-6 6m6-6H10a6 6 0 0 0-6 6',
+  upload: 'M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6',
+  close: 'm6 6 12 12M6 18 18 6',
+  kpi: 'M3 5h18v14H3zM7 10h3v5m4-5h3l-3 5h3',
+  table: 'M3 4h18v16H3zM3 9h18M3 14h18M9 4v16',
+  bar: 'M4 3v18h17M8 17v-6h3v6m4 0V6h3v11',
+  line: 'M3 3v18h18M6 16l5-6 4 3 6-8',
+  area: 'M3 20h18V6l-6 7-4-3-8 7z',
+  mixed: 'M3 21h18M6 18v-6h3v6m5 0V8h3v10M4 10l6-4 5 2 6-5',
+  pie: 'M10 3a9 9 0 1 0 11 11H10zM14 3v7h7a9 9 0 0 0-7-7',
+  scatter: 'M3 3v18h18M7 15h.1M10 9h.1M14 13h.1M17 5h.1M19 10h.1',
+  radar: 'm12 2 10 7-4 12H6L2 9zm0 4 6 5-3 6H9l-3-6zM12 2v4M2 9l4 2m12 0 4-2M6 21l3-4m6 0 3 4',
+  funnel: 'M3 4h18l-6 8v7l-6 2v-9z',
+  gauge: 'M4 19a10 10 0 1 1 16 0M12 14l5-6M6 16h.1M5 10h.1M10 5h.1M17 5h.1',
+  waterfall: 'M3 21h18M5 18v-7h3v7m2-9V5h3v4m2 6v-4h3v4M8 11h2m3-2h2',
+  heatmap: 'M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h6v6h-6z',
+  histogram: 'M3 21h18M5 21V11h4v10m0 0V5h4v16m0 0V9h4v12m0 0v-6h4v6',
+  boxplot: 'M6 3v5m0 8v5M3 8h6v8H3zm12-5v8m0 6v4m-3-10h6v6h-6z',
+  tree: 'M10 3h4v4h-4zM3 17h4v4H3zm14 0h4v4h-4zM12 7v5M5 17v-5h14v5',
+  treemap: 'M3 3h18v18H3zM11 3v18m0-12h10m-5 0v12M3 14h8',
+  sunburst: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-5 0a4 4 0 1 1-8 0 4 4 0 0 1 8 0M12 3v5m0 8v5M3 12h5m8 0h5',
+  sankey: 'M3 3h4v6H3zm0 12h4v6H3zM17 6h4v12h-4zM7 5c6 0 4 3 10 3M7 8c6 0 4 8 10 8M7 17c6 0 4-6 10-6M7 20c6 0 4-3 10-3',
+  map: 'm3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2zm6-2v16m6-14v16',
+};
+
+export function Icon({ name }: { name: string }) {
+  if (name === 'comment') return <span className="comment-icon" aria-hidden="true" />;
+  return <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
+}
