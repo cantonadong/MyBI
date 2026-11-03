@@ -34,6 +34,7 @@ export function ChartView({ config, rows, page = 0, pageSize = 20, onPageChange,
     if (context) context.font = '12px sans-serif';
     const update = () => {
       if (!chart) return;
+      chart.resize();
       const { config, rows } = latest.current;
       if (config.type === 'map' && config.mapGeoJSON) echarts.registerMap(mapName, config.mapGeoJSON as any);
       const option = optionFor(config, rows, mapName, { width: chart.getWidth(), height: chart.getHeight(), measureText: context ? text => context.measureText(text).width : undefined });
@@ -46,7 +47,7 @@ export function ChartView({ config, rows, page = 0, pageSize = 20, onPageChange,
       option.legend.textStyle = { fontFamily: style.fontFamily, fontSize: 12, color: style.getPropertyValue('--ui-text').trim() };
       option.legend.selectorLabel = { ...option.legend.textStyle, opacity: partial ? 1 : 0, backgroundColor: '#fff', borderColor: style.getPropertyValue('--ui-border').trim(), borderWidth: 1, borderRadius: 5, padding: [5, 9], lineHeight: 16 };
       option.legend.emphasis = { selectorLabel: { opacity: partial ? 1 : 0, color: style.getPropertyValue('--ui-accent').trim(), backgroundColor: style.getPropertyValue('--ui-hover').trim(), borderColor: style.getPropertyValue('--ui-accent').trim() } };
-      chart.resize(); chart.setOption(option, true);
+      chart.setOption(option, true);
     };
     const observer = new ResizeObserver(update);
     try {

@@ -1,0 +1,25 @@
+1 ICON "../design/icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "MyBI Service Manager\0"
+            VALUE "FileVersion", "1.0.0\0"
+            VALUE "InternalName", "MyBI\0"
+            VALUE "OriginalFilename", "MyBI.exe\0"
+            VALUE "ProductName", "MyBI\0"
+            VALUE "ProductVersion", "1.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

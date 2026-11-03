@@ -3,6 +3,26 @@ import { optionFor } from './options';
 import { chartRegistry } from './registry';
 const rows = [{ region: 'A', target: 'B', amount: 10, profit: 3 }, { region: 'A', target: 'C', amount: 20, profit: 5 }];
 describe('chart adapters', () => {
+  it('separates a small bar value from a ratio without moving labels in other categories', () => {
+    const option = optionFor({ type: 'mixed', dimension: 'day', measure: 'users', measures: ['users', 'ratio'], metricSeries: [{ type: 'bar', axis: 'left' }, { type: 'line', axis: 'right' }], labels: true, labelDensity: 'all' }, [{ day: 'Oct 20', users: 40, ratio: .001 }]);
+    const bar = { seriesIndex: 0, dataIndex: 0, text: '40', labelRect: { x: 100, y: 210, width: 18, height: 14 } };
+    const ratio = { seriesIndex: 1, dataIndex: 0, text: '0.1%', labelRect: { x: 95, y: 208, width: 32, height: 14 } };
+    expect(option.series[0].labelLayout(bar).y).toBeUndefined();
+    const moved = option.series[1].labelLayout(ratio);
+    expect(moved.hideOverlap).toBe(false);
+    expect(moved.y + ratio.labelRect.height + 4 <= bar.labelRect.y || moved.y >= bar.labelRect.y + bar.labelRect.height + 4).toBe(true);
+    expect(option.series[1].labelLayout({ ...ratio, dataIndex: 1, labelRect: { ...ratio.labelRect, x: 300 } }).y).toBeUndefined();
+    expect(option.series[0].labelLayout(bar).y).toBeUndefined();
+    expect(option.series.map((series: any) => series.data)).toEqual([[40], [.001]]);
+  });
+  it('separates horizontal labels along the value axis', () => {
+    const option = optionFor({ type: 'bar', horizontal: true, dimension: 'region', measure: 'amount', labels: true, labelDensity: 'all' }, rows);
+    const label = { seriesIndex: 0, dataIndex: 0, text: '40', labelRect: { x: 100, y: 80, width: 20, height: 14 } };
+    option.series[0].labelLayout(label);
+    const moved = option.series[0].labelLayout({ ...label, dataIndex: 1 });
+    expect(moved.x + 24 <= 100 || moved.x >= 124).toBe(true);
+    expect(moved.y).toBe(80);
+  });
   it('keeps missing numeric categories distinct from zero', () => {
     const option = optionFor({ type: 'bar', dimension: 'ratio', measure: 'amount', fieldFormats: { ratio: { kind: 'decimal', format: 'percent', decimals: 2 } } }, [{ ratio: null, amount: 1 }, { ratio: 0, amount: 2 }]);
     expect(option.xAxis.data.map(option.xAxis.axisLabel.formatter)).toEqual(['NULL', '0.00%']);

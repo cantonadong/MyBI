@@ -399,5 +399,20 @@
   "\u542f\u52a8\u670d\u52a1": "Start service",
   "\u542f\u52a8\u4e2d\u2026": "Starting...",
   "\u9000\u51fa MyBI": "Exit MyBI",
-  "\u670d\u52a1\u8fdb\u7a0b\u4e0d\u5339\u914d": "Service process does not match"
+  "\u670d\u52a1\u8fdb\u7a0b\u4e0d\u5339\u914d": "Service process does not match",
+  "服务管理": "Service manager",
+  "关闭此窗口后服务继续运行；请使用停止服务按钮停止。": "Closing this window keeps the service running. Use Stop service to stop it.",
+  "日志目录：": "Logs:",
+  "操作失败": "Operation failed",
+  "端口 8000 被其他服务占用": "Port 8000 is occupied by another service",
+  "无法检查服务状态": "Unable to check service status",
+  "MyBI 服务管理窗口已经打开，请从任务栏切换。": "The MyBI service manager is already open. Switch to it from the taskbar.",
+  "无法打开浏览器": "Unable to open the browser",
+  "缺少 Python 运行环境，请使用完整便携包。": "Python runtime is missing. Use the complete portable package.",
+  "缺少网页构建文件，请重新构建或使用完整便携包。": "Web build is missing. Rebuild or use the complete portable package.",
+  "无法创建服务日志": "Unable to create service logs",
+  "服务启动失败": "Service failed to start",
+  "服务启动失败，请查看日志。": "Service failed to start. See the log.",
+  "服务启动超时，请查看日志。": "Service startup timed out. See the log.",
+  "无法停止服务": "Unable to stop the service"
 }

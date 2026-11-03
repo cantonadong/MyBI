@@ -158,6 +158,28 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       return day === 6 || day === 0 ? 'rgba(34, 197, 94, 0.06)' : 'transparent';
     }) } };
   }
+  const labelStyle = { color: '#202738', fontWeight: 'normal', textBorderColor: '#fff', textBorderWidth: 3 };
+  const hideOverlap = !c.labelDensity || c.labelDensity === 'auto';
+  type LabelRect = { x: number; y: number; width: number; height: number };
+  const placedLabels = new Map<string, LabelRect>();
+  const layoutLabel = (params: { seriesIndex: number; dataIndex: number; text: string; labelRect: LabelRect }) => {
+    if (!params.text) return { hideOverlap };
+    const key = `${params.seriesIndex}:${params.dataIndex}`;
+    // ECharts reuses the callback on resize; a repeated label starts a new layout pass.
+    if (placedLabels.has(key)) placedLabels.clear();
+    const rect = { ...params.labelRect };
+    const axis = c.horizontal ? 'x' : 'y', length = c.horizontal ? 'width' : 'height';
+    const cross = c.horizontal ? 'y' : 'x', breadth = c.horizontal ? 'height' : 'width';
+    const limit = Math.max(4, (c.horizontal ? size.width - 4 : size.height - 55) - rect[length]);
+    const preferred = Math.max(4, Math.min(limit, rect[axis]));
+    // shortcut: scans placed labels; use a spatial index if dense charts make layout slow.
+    const blockers = [...placedLabels.values()].filter(other => rect[cross] < other[cross] + other[breadth] + 4 && rect[cross] + rect[breadth] + 4 > other[cross]);
+    const candidates = [preferred, ...blockers.flatMap(other => [other[axis] - rect[length] - 4, other[axis] + other[length] + 4])]
+      .filter(value => value >= 4 && value <= limit).sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred));
+    rect[axis] = candidates.find(value => blockers.every(other => value + rect[length] + 4 <= other[axis] || value >= other[axis] + other[length] + 4)) ?? preferred;
+    placedLabels.set(key, rect);
+    return rect[axis] === params.labelRect[axis] ? { hideOverlap } : { x: rect.x, y: rect.y, align: 'left', verticalAlign: 'top', hideOverlap };
+  };
   option.series.forEach((series: any) => {
     const field = series._field || primary;
     delete series._field;
@@ -181,8 +203,9 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       field + ': ' + formatted(params.value[1], field),
       ...(c.secondMeasure ? [c.secondMeasure + ': ' + formatted(params.value[2], c.secondMeasure)] : []),
     ].join('\n');
-    series.labelLayout = { ...series.labelLayout, hideOverlap: !c.labelDensity || c.labelDensity === 'auto' };
-    series.label = { ...series.label, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.labels, ...(series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
+    series.labelLayout = cartesian || c.type === 'scatter' ? layoutLabel : { ...series.labelLayout, moveOverlap: c.horizontal ? 'shiftX' : 'shiftY', hideOverlap };
+    series.labelLine = { ...series.labelLine, show: true, lineStyle: { ...series.labelLine?.lineStyle, color: '#8790a4', width: 1 } };
+    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.labels, ...(series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
       if ((cartesian || (c.labelDensity && c.labelDensity !== 'auto')) && (params.dimensionIndex ?? params.dataIndex) % stride !== 0) return '';
       if (['tree', 'treemap', 'sunburst'].includes(c.type)) return c.labels ? params.name + ': ' + valueText(params.value, true) : params.name;
       return valueText(params.value, true);
@@ -191,12 +214,12 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       const renderItem = series.renderItem;
       series.renderItem = (params: any, api: any) => {
         const shape = renderItem(params, api);
-        shape.textContent = { type: 'text', style: { text: series.label.formatter({ dataIndex: params.dataIndex, value: [api.value(0), api.value(1), api.value(2)] }), fill: '#202738' } };
+        shape.textContent = { type: 'text', style: { ...labelStyle, text: series.label.formatter({ dataIndex: params.dataIndex, value: [api.value(0), api.value(1), api.value(2)] }), fill: labelStyle.color, stroke: labelStyle.textBorderColor, lineWidth: labelStyle.textBorderWidth } };
         shape.textConfig = { position: 'top' };
         return shape;
       };
     }
-    if (c.type === 'gauge') { series.detail = { ...series.detail, formatter: (value: number) => labelValue(value, field) }; series.axisLabel = { ...series.axisLabel, formatter: (value: number) => metricValue(value, field) }; }
+    if (c.type === 'gauge') { series.detail = { ...series.detail, ...labelStyle, formatter: (value: number) => labelValue(value, field) }; series.axisLabel = { ...series.axisLabel, formatter: (value: number) => metricValue(value, field) }; }
   });
   if (c.axisHover && option.xAxis && option.yAxis) {
     const axis = option.yAxis.type === 'category' && option.xAxis.type !== 'category' ? 'y' : 'x';
