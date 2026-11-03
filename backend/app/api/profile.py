@@ -1,14 +1,33 @@
 import base64
 import re
 from getpass import getuser
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
 from ..db import SessionLocal
 from ..models import UserProfile
+from ..settings import PROJECT_ROOT
 
 router = APIRouter(prefix='/api/profile')
+MANAGER_LOCALE_PATH = PROJECT_ROOT / 'data/manager-locale.txt'
+
+
+class ManagerLocaleBody(BaseModel):
+    locale: Literal['zh-CN', 'en']
+
+
+@router.put('/locale')
+def save_manager_locale(body: ManagerLocaleBody):
+    MANAGER_LOCALE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=MANAGER_LOCALE_PATH.parent) as directory:
+        temporary = Path(directory) / 'locale.txt'
+        temporary.write_text(body.locale, encoding='utf-8')
+        temporary.replace(MANAGER_LOCALE_PATH)
+    return body.model_dump()
 
 
 class ProfileBody(BaseModel):

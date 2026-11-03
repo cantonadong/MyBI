@@ -22,6 +22,11 @@ export function getChartLocale(): 'zh-CN' | 'en' {
 function notify() {
   document.documentElement.lang = getLocale();
   listeners.forEach(listener => listener());
+  syncManagerLocale();
+}
+function syncManagerLocale() {
+  // The native service manager cannot read browser localStorage.
+  void fetch('/api/profile/locale', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: getLocale() }) }).catch(() => {});
 }
 export function setLanguage(value: Language) {
   localStorage.setItem(key, value); language = value; notify();
@@ -36,6 +41,7 @@ window.addEventListener('storage', event => {
   }
 });
 document.documentElement.lang = getLocale();
+syncManagerLocale();
 export function useLanguage() {
   useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => language + ':' + getLocale());
   return { language, locale: getLocale() };

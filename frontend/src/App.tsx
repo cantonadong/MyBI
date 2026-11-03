@@ -19,12 +19,13 @@ import { chartColors, chartPalettes, randomChartColors } from './charts/palettes
 
 const Grid = WidthProvider(GridLayout);
 const empty: Document = { charts: [], filters: [], datasets: [] };
+function nameWithTime(name: string, date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${name} ${pad(date.getMonth() + 1)}${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 function datasetDisplayName(source?: Dataset) {
   if (!source) return '';
-  if (!source.data_as_of) return source.name;
-  const date = new Date(source.data_as_of);
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${source.name} ${pad(date.getMonth() + 1)}${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return source.data_as_of ? nameWithTime(source.name, new Date(source.data_as_of)) : source.name;
 }
 function navigateTo(path: string, replace = false) {
   if (window.location.pathname + window.location.search + window.location.hash !== path) window.history[replace ? 'replaceState' : 'pushState'](null, '', path);
@@ -63,7 +64,7 @@ function ChartTile({ tile, dataset, global, showUpdatedAt, theme, highlightWeeke
 export default function App() {
   const { language } = useLanguage();
   const { chartLanguage } = useChartLanguage();
-  const [doc, setDoc] = useState<Document>(empty), [selected, setSelected] = useState(''), [name, setName] = useState(t("未命名仪表板"));
+  const [doc, setDoc] = useState<Document>(empty), [selected, setSelected] = useState(''), [name, setName] = useState(() => nameWithTime(t('未命名报表')));
   const [id, setId] = useState(''), [version, setVersion] = useState(1), [dirty, setDirty] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, { document: Document; name: string; version: number; selected: string; activeDatasetId: string; importedIds: string[] }>>(() => {
     try { const stored = JSON.parse(localStorage.getItem('mybi.report-drafts') || '{}'); return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}; } catch { return {}; }
@@ -475,7 +476,7 @@ export default function App() {
   const resetReport = () => {
     ++session.current; history.current = []; future.current = []; setRestoredDraft(false); setPublishedView(false); setPreviewMode(false); setCommentChart('');
     setDoc({ charts: [], filters: [], datasets: [] }); setDatasets([]); setImportedIds([]); setDatasetNumbers({});
-    setName(t('\u672a\u547d\u540d\u62a5\u8868')); setId(''); setVersion(1); setDirty(false); setSelected(''); setActiveDatasetId('');
+    setName(nameWithTime(t('未命名报表'))); setId(''); setVersion(1); setDirty(false); setSelected(''); setActiveDatasetId('');
     setDeleted(null); setCopied(null); setPasteArmed(false); insertionRef.current = null; setInsertion(null);
     setSaveError(''); setPreviewMode(false); setShowSettings(false); setShowReports(false); setPanel('charts'); setMessage('');
     navigateTo('/reports/new');

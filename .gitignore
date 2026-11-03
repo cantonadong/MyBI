@@ -18,4 +18,5 @@ MyBI.exe
 artifacts/
 data/
 runtime/
+desktop/target/
 tests/*-tested.png
