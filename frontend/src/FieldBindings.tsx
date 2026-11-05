@@ -57,6 +57,9 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
       </div>)}
     </section> : !['kpi', 'gauge', 'histogram'].includes(c.type) && select(c.type === 'sankey' ? t("来源节点") : hierarchy ? t("一级分类") : c.horizontal ? t("Y 轴") : t("X 轴"), c.dimension, dimension => onChange({ dimension }), dimensions)}
     {(c.type === 'heatmap' || c.type === 'sankey' || hierarchy) && select(c.type === 'heatmap' ? t("Y 轴") : c.type === 'sankey' ? t("目标节点") : t("下一级分类（可选）"), c.secondDimension, secondDimension => onChange({ secondDimension }), dimensions)}
+    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'histogram'].includes(c.type) && <label>{c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')}<select aria-label={c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')} value={c.axisLabelDensity || 'auto'} onChange={event => onChange({ axisLabelDensity: event.target.value as ChartConfig['axisLabelDensity'] })}>
+      <option value="auto">{t('自动')}</option><option value="all">{t('全部')}</option>{['1', '2', '3'].map(value => <option key={value} value={value}>{t('每隔 {0} 个', value)}</option>)}
+    </select></label>}
     {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap'].includes(c.type) && <>
       <label>{t('X 轴排序')}<select aria-label={t('X 轴排序')} value={c.xAxisSort || 'none'} onChange={event => onChange({ xAxisSort: event.target.value as ChartConfig['xAxisSort'] })}>
         <option value="none">{t('默认（数据顺序）')}</option><option value="asc">{t('升序')}</option><option value="desc">{t('降序')}</option><option value="custom">{t('自定义')}</option>

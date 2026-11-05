@@ -1,4 +1,4 @@
-# MyBI v1.0
+# MyBI v1.1
 
 A local visual report builder for Windows, with Simplified Chinese and English UI.
 
@@ -8,8 +8,8 @@ Two packages are available for Windows 10/11 x64. Both include the Rust + Slint 
 
 | Package | Runtime dependencies |
 | --- | --- |
-| `MyBI-v1.0-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe` or `run.bat`. No Python or Node.js installation needed. |
-| `MyBI-v1.0-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
+| `MyBI-v1.1-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
+| `MyBI-v1.1-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
 
 ```powershell
 py -3.13 -m venv .venv
@@ -17,7 +17,7 @@ py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install ./backend
 ```
 
-Then double-click `MyBI.exe` or `run.bat`. Backend dependencies and minimum versions are declared in `backend/pyproject.toml`: FastAPI, Uvicorn, DuckDB, PyArrow, python-calamine, python-multipart, SQLAlchemy, Alembic, and psycopg. pip installs their transitive dependencies automatically. Node.js is only needed when building the frontend from source, not for either release package.
+Then double-click `MyBI.exe`. Backend dependencies and minimum versions are declared in `backend/pyproject.toml`: FastAPI, Uvicorn, DuckDB, PyArrow, python-calamine, python-multipart, SQLAlchemy, Alembic, and psycopg. pip installs their transitive dependencies automatically. Node.js is only needed when building the frontend from source, not for either release package.
 
 A normal desktop window with a MyBI taskbar icon shows the local service status. The service starts automatically; use the buttons to start or stop it, or open http://127.0.0.1:8000 in your browser. Minimize the window to keep it on the taskbar. Closing the window leaves the service running; reopen MyBI to manage it. Opening MyBI again restores and activates its existing manager window rather than displaying a duplicate-instance dialog. An existing healthy service from the same application folder is reused.
 
@@ -33,7 +33,48 @@ Reports and profile settings are stored in `data-workbench.db`; imported data sn
 - Browse datasets referenced by saved reports, manage comments, and highlight weekends.
 - Change language, chart palette and display defaults in Settings.
 
-Published report links require this service to remain running. This is a local application, with no multi-user access-control system.
+Published report links require the service to remain running. Local mode is single-user. Server mode supports a shared administrator login; it does not provide separate user roles.
+
+## Connected datasets and files
+
+Use **Connect data** in the report editor or Dataset management. File/clipboard sources keep the existing field configuration workflow. Dynamic sources connect to PostgreSQL using host, port, database, username, password and TLS settings, and read SQL results, tables, views or materialized views. Use a dedicated read-only database account. TLS verifies the server certificate and hostname by default; enable Trust server certificate only for a server whose certificate you have independently verified.
+
+**Validate query** runs the query and checks the connection, SQL/object, unique columns and non-empty result. It shows sample rows, row count and server query/result-fetch duration in the largest applicable unit. Saving a new source queries again to persist a fresh complete result. Validation results are previews, not saved datasets.
+
+Dataset management lets you edit sources and daily schedules (time and IANA timezone), read today's cache, force refresh and manage cache files. Save source changes before refreshing. Each daily schedule queries the source even if today's cache already exists. A missed daily run is executed once after the service resumes, then the next daily run is scheduled. Failed runs retain the previous successful dataset and report snapshots and expose the last error. Local schedules require the service to remain running, but not the browser or manager window.
+
+Files are managed beside `MyBI.exe` by default:
+
+```text
+datasets/<dataset-id>/dataset.json
+datasets/<dataset-id>/snapshots/<snapshot-id>.parquet
+datasets/<dataset-id>/cache/YYYY-MM-DD.parquet
+datasets/<dataset-id>/cache/YYYY-MM-DD.json
+reports/<report-id>.json
+```
+
+The date uses the dataset schedule's timezone. Force refresh replaces that date's cache; immutable snapshots remain available to published reports. Deleting a cache does not delete report snapshots. Deleting a dataset removes its managed directory and is blocked while a saved or published report references it. Existing snapshots are copied into managed directories at startup without deleting their old files. Report JSON includes its published version. The metadata database remains authoritative; these files are maintained by the service, so do not rename or edit them while it is running.
+
+Connection passwords are encrypted in the metadata database and excluded from manifests, report files and API responses. Local mode creates `data/secret.key`. Back up the metadata database, `datasets/`, `reports/` and the key together. Losing the key requires entering database passwords again. File backups alone do not restore the metadata database.
+
+## Server deployment
+
+When a published report is opened, dynamic datasets resolve their most recent successful snapshot. Static datasets keep their published snapshots. Refreshing the browser picks up successful scheduled or manual updates; an already-open report does not repeatedly query its database.
+
+The existing Docker Compose stack runs PostgreSQL metadata storage, the API, a separate scheduler and the web proxy. Queries and schedules execute on the server, not in a user's browser. Set these environment variables in an untracked `.env` before `docker compose up -d --build`:
+
+```dotenv
+MYBI_DB_PASSWORD=replace-with-a-long-url-safe-database-password
+MYBI_ADMIN_USER=admin
+MYBI_ADMIN_PASSWORD=replace-with-a-long-unique-login-password
+MYBI_SECRET_KEY=replace-with-a-fernet-key
+```
+
+Generate a key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` after installing backend dependencies. Keep this key stable across API/worker restarts and replicas. A metadata database password embedded in a URL must be URL-safe (or URL-encoded); existing installations must use their current PostgreSQL password. API access requires the configured Basic login. The default published ports bind to loopback; place the web proxy behind an HTTPS reverse proxy or an authenticated private-network gateway before exposing it to other machines. This shared login is not multi-user authorization.
+
+Persistent volumes: `postgres-data` stores metadata, `resource-data` stores managed dataset/report files, and the original `snapshot-data` volume retains legacy snapshots. Back up all three volumes and `.env` together. Do not use `docker compose down -v` when retaining data. `DATASET_ROOT` and `REPORT_ROOT` allow non-container server installations to choose persistent directories. `MYBI_SCHEDULER=false` disables the API's embedded scheduler when running `python -m app.scheduler` separately. Database leases prevent overlapping refreshes of the same dataset across workers. Start a single API process for initial schema creation before adding workers.
+
+Dynamic queries default to 300 seconds, 1,000,000 rows and the existing 100 MiB dataset input size limit. Configure `DYNAMIC_TIMEOUT_SECONDS`, `DYNAMIC_MAX_ROWS` and `MAX_UPLOAD_BYTES` identically for API and scheduler. Do not grant untrusted users access to connection configuration: connected-source administrators can reach database hosts accessible to the server.
 
 ## Build from source
 
@@ -41,8 +82,8 @@ Use Windows x64, Python 3.13, Node.js, Rust's `stable-x86_64-pc-windows-msvc` to
 
 Run `./scripts/build.ps1` from a PowerShell development terminal to build the frontend and Rust manager. This script is a developer build tool, not a runtime dependency. Alternatively, build with `npm.cmd --prefix frontend run build`, then `cargo +stable-x86_64-pc-windows-msvc build --manifest-path desktop/Cargo.toml --release --locked` and copy `desktop/target/release/MyBI.exe` to the project root. Add `-Package` to the build script to create both Windows ZIPs and `SHA256SUMS.txt` under `artifacts`. Packaging reuses an existing bundled `runtime` when present; otherwise it collects Python and backend dependencies from the local environment for the portable variant only.
 
-The manager starts Python directly and keeps stdout/stderr in `data/logs`, without a shell. It verifies the project path and Python process before stopping a service. `run.bat --check` checks the runtime and web build without starting the service. The optional developer script `scripts/build-selfsigned.ps1` builds the same Rust manager and signs a local copy; it does not add the certificate to a trust store. Rebuilding or self-signing does not establish publisher trust or guarantee acceptance by endpoint security.
+The manager starts Python directly and keeps stdout/stderr in `data/logs`, without a shell. It verifies the project path and Python process before stopping a service. The optional developer script `scripts/build-selfsigned.ps1` builds the same Rust manager and signs a local copy; it does not add the certificate to a trust store. Rebuilding or self-signing does not establish publisher trust or guarantee acceptance by endpoint security.
 
 After pulling updates on another computer, rerun `npm.cmd --prefix frontend ci` and `./scripts/build.ps1` to refresh both the web build and `MyBI.exe`. Commit `frontend/package-lock.json` and `desktop/Cargo.lock` with dependency changes. Generated executables, `frontend/dist`, runtimes, databases and imported snapshots are local files and are not synchronized by Git.
 
-Tests are not run by the build script. v1.0 was built and packaged without running the test suite.
+Tests are not run by the build script. v1.1 was built and packaged without running the test suite.

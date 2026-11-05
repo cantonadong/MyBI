@@ -3,6 +3,13 @@ import { optionFor } from './options';
 import { chartRegistry } from './registry';
 const rows = [{ region: 'A', target: 'B', amount: 10, profit: 3 }, { region: 'A', target: 'C', amount: 20, profit: 5 }];
 describe('chart adapters', () => {
+  it('sets category axis density independently of data label density', () => {
+    const config = { type: 'bar' as const, dimension: 'region', measure: 'amount', labels: true, labelDensity: 'all' as const, axisLabelDensity: '2' as const };
+    const option = optionFor(config, rows);
+    expect(option.xAxis.axisLabel.interval).toBe(2);
+    expect(option.series[0].label.formatter({ dataIndex: 1, value: 20 })).not.toBe('');
+    expect(optionFor({ ...config, horizontal: true, axisLabelDensity: 'all' }, rows).yAxis.axisLabel.interval).toBe(0);
+  });
   it('separates a small bar value from a ratio without moving labels in other categories', () => {
     const option = optionFor({ type: 'mixed', dimension: 'day', measure: 'users', measures: ['users', 'ratio'], metricSeries: [{ type: 'bar', axis: 'left' }, { type: 'line', axis: 'right' }], labels: true, labelDensity: 'all' }, [{ day: 'Oct 20', users: 40, ratio: .001 }]);
     const bar = { seriesIndex: 0, dataIndex: 0, text: '40', labelRect: { x: 100, y: 210, width: 18, height: 14 } };

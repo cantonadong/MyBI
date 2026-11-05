@@ -3,12 +3,32 @@ import { t } from './i18n';
 import type { ChartConfig } from './charts/registry';
 export type Filter = { sourceId?: string; datasetId?: string; field: string; op: string; value: unknown };
 export type FilterMode = 'global' | 'local' | 'both';
-export type Dataset = { snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | null; filename?: string | null; version?: number; field_formats?: FieldFormats };
-export type Tile = { id: string; datasetId: string; config: ChartConfig; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
+export type AnnotationFields = Record<'start' | 'end' | 'label', string>;
+export type Annotation = { start: string | null; end: string | null; label: string };
+export type Dataset = { annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
+export type Tile = { id: string; datasetId: string; config: ChartConfig; followFilterIds?: string[]; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
 export type CanvasGrid = { columns: number; rows: number };
 export type InsertSide = 'left' | 'right' | 'top' | 'bottom';
 export type Document = { highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
 export type SavedReport = { id: string; name: string; owner?: string | null; updated_at?: string | null };
+export function filterMatchesChart(tile: Tile, filter: Tile, dataset?: Dataset): boolean {
+  if (filter.config.type !== 'filter' || tile.datasetId !== filter.datasetId || !dataset) return false;
+  const schema = dataset.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => field.name);
+  const dimensions = ['table', 'kpi', 'gauge', 'histogram'].includes(tile.config.type) ? schema : [...(tile.config.dimensions || [tile.config.dimension]), tile.config.secondDimension, tile.config.legendField];
+  const fields = filter.config.filterStyle === 'cascade' ? filter.config.filterFields || [] : [filter.config.dimension];
+  return fields.length > 0 && fields.every(field => !!field && schema.includes(field) && dimensions.includes(field));
+}
+export function followedFilterIds(tile: Tile, charts: Tile[], dataset?: Dataset): string[] {
+  if (tile.followFilterIds) return charts.filter(chart => tile.followFilterIds!.includes(chart.id) && filterMatchesChart(tile, chart, dataset)).map(chart => chart.id);
+  const above = charts.filter(chart => chart.config.type === 'filter' && chart.y + chart.h <= tile.y);
+  above.sort((a, b) => (b.y + b.h) - (a.y + a.h) || Math.abs(a.x + a.w / 2 - tile.x - tile.w / 2) - Math.abs(b.x + b.w / 2 - tile.x - tile.w / 2) || a.x - b.x);
+  return above.length && filterMatchesChart(tile, above[0], dataset) ? [above[0].id] : [];
+}
+export function nextFilterTitle(charts: Tile[]): string {
+  const filters = charts.filter(chart => chart.config.type === 'filter');
+  const number = Math.max(filters.length, ...filters.map(chart => Number(chart.config.title?.match(/\s(\d+)$/)?.[1]) || 0)) + 1;
+  return t('筛选器 {0}', number);
+}
 export function controlFilters(tile: Tile, dataset?: Dataset): Filter[] {
   const c = tile.config;
   if (c.type !== 'filter' || !dataset) return [];
@@ -78,7 +98,7 @@ export async function api(path: string, options?: RequestInit) {
   const response = await fetch('/api' + path, options);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    const message = error.detail?.code === 'type_conversion_required' ? t('字段类型与部分数据不一致，请调整类型或确认转换') : t(typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail || response.statusText));
+    const message = error.detail?.code === 'type_conversion_required' ? t('字段类型与部分数据不一致，请调整类型或确认转换') : error.detail?.code === 'source_query_failed' ? `${t('数据库查询失败')}：${error.detail.message}` : error.detail?.code === 'source_validation_failed' ? t(error.detail.message) : Array.isArray(error.detail) ? error.detail.map((entry: { msg: string }) => t(entry.msg.replace(/^Value error, /, ''))).join('; ') : t(typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail || response.statusText));
     throw Object.assign(new Error(message), { detail: error.detail });
   }
   return response.status === 204 ? null : response.json();

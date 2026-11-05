@@ -1,27 +1,30 @@
-from datetime import timezone
+from datetime import datetime, timezone
 from datetime import date
 import csv
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import json
 import math
+from decimal import Decimal
 from threading import BoundedSemaphore, Timer
 from uuid import uuid4
 from typing import Literal
+from contextlib import ExitStack
 
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select, update
+from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from sqlalchemy import select, update, delete, or_
 
 from ..db import SessionLocal
 from ..imports.delimited import parse_delimited, _value, infer_formats
 from ..imports.excel import read_workbook
-from ..models import Dataset, DatasetSnapshot, Dashboard
+from ..models import Dataset, DatasetSnapshot, Dashboard, PublishedDashboard, DynamicSource
 from ..settings import settings
 from ..expressions import compile_expression
+from ..storage import dataset_dir, write_dataset, rollback_files
 
 router = APIRouter(prefix="/api")
 # ponytail: concurrency is bounded per process; use a shared worker queue for multi-process deployments.
@@ -58,18 +61,23 @@ class PasteImport(BaseModel):
     dataset_id: str | None = None
     version: int | None = Field(default=None, ge=1)
     confirm_conversion: bool = False
+    annotation_fields: dict[str, str] = Field(default_factory=dict)
+    annotation_order: list[str] = Field(default_factory=list)
 
 
-def convert_preview(preview, overrides, renames=None, field_order=None, confirm_conversion=False, formats=None):
+def convert_preview(preview, overrides, renames=None, field_order=None, confirm_conversion=False, formats=None, annotation_fields=None):
     from ..imports.delimited import Field as Column, TabularPreview
     if field_order:
         if len(field_order) != len(preview.headers) or set(field_order) != set(preview.headers):
             raise ValueError('Field order must contain every field exactly once')
         indices = [preview.headers.index(name) for name in field_order]
-        indices.sort(key=lambda index: overrides.get(preview.fields[index].name, preview.fields[index].type) in {'number', 'integer'})
+        if not annotation_fields:
+            indices.sort(key=lambda index: overrides.get(preview.fields[index].name, preview.fields[index].type) in {'number', 'integer'})
         preview = TabularPreview([preview.headers[i] for i in indices], [[row[i] for i in indices] for row in preview.rows], [preview.fields[i] for i in indices], [[row[i] for i in indices] for row in preview.raw_rows] if preview.raw_rows is not None else None)
     renames = renames or {}
     names = [renames.get(field.name, field.name).strip() for field in preview.fields]
+    if annotation_fields:
+        annotation_rows(names, [], annotation_fields)
     if any(not name for name in names) or len(set(names)) != len(names):
         raise ValueError('Column names must be non-empty and unique')
     fields = [Column(names[index], overrides.get(field.name, field.type)) for index, field in enumerate(preview.fields)]
@@ -83,6 +91,10 @@ def convert_preview(preview, overrides, renames=None, field_order=None, confirm_
         if value == '':
             return None
         if kind in {'number', 'integer'}:
+            if isinstance(value, Decimal):
+                if not value.is_finite() or (kind == 'integer' and value != value.to_integral_value()):
+                    raise ValueError(f'Invalid {kind}: {value}')
+                return int(value) if kind == 'integer' else value
             if isinstance(value, str):
                 parsed = _value(value)
                 if parsed is None:
@@ -103,7 +115,11 @@ def convert_preview(preview, overrides, renames=None, field_order=None, confirm_
                 raise ValueError(f'Invalid integer: {value}; choose decimal to keep fractions')
             return int(number) if kind == 'integer' else number
         if kind == 'date':
+            if annotation_fields and field_name in {annotation_fields['start'], annotation_fields['end']} and isinstance(value, str) and value.strip().upper() in {'NULL', '[NULL]', '\\N'}:
+                return None
             try:
+                if annotation_fields and field_name in {annotation_fields['start'], annotation_fields['end']}:
+                    return annotation_date(value)
                 return date.fromisoformat(str(value)[:10])
             except ValueError as error:
                 raise ValueError(f'字段“{field_name}”的值“{value}”无法转换为日期。请使用 YYYY-MM-DD 格式（例如 2026-10-28），或将该字段改为文本或数值类型。') from error
@@ -138,6 +154,58 @@ def preview_payload(preview):
     return {'schema': [{'name': f.name, 'type': f.type} for f in preview.fields], 'rows': [dict(zip(preview.headers, row)) for row in preview.rows[:5]], 'row_count': len(preview.rows), 'field_formats': infer_formats(preview)}
 
 
+def annotation_date(value):
+    if isinstance(value, date):
+        return date.fromisoformat(value.isoformat()[:10])
+    text = str(value).strip()
+    return datetime.strptime(text, '%Y/%m/%d').date() if '/' in text else date.fromisoformat(text)
+
+
+def annotation_rows(headers, rows, fields):
+    if set(fields) != {'start', 'end', 'label'} or len(headers) != 3 or set(fields.values()) != set(headers):
+        raise HTTPException(422, 'Annotation 必须包含开始日期、结束日期、标签三列')
+    indices = {role: headers.index(name) for role, name in fields.items()}
+    result = []
+    for row in rows:
+        item = {}
+        for role in ('start', 'end'):
+            value = row[indices[role]]
+            if value is None or isinstance(value, str) and value.strip().upper() in {'', 'NULL', '[NULL]', '\\N'}:
+                item[role] = None
+            else:
+                try:
+                    item[role] = annotation_date(value).isoformat()
+                except (ValueError, TypeError):
+                    raise HTTPException(422, 'Annotation 日期必须为 YYYY-MM-DD、YYYY/M/D 或 NULL') from None
+        label = row[indices['label']]
+        if label is None or not str(label).strip():
+            raise HTTPException(422, 'Annotation 标签不能为空')
+        if item['start'] and item['end'] and item['start'] > item['end']:
+            raise HTTPException(422, 'Annotation 开始日期不能晚于结束日期')
+        result.append({**item, 'label': str(label)})
+    return result
+
+
+def annotation_preview(preview, order):
+    from ..imports.delimited import Field as Column, TabularPreview, infer_type
+    if not order:
+        return preview
+    fields = dict(zip(order, preview.headers))
+    normalized = annotation_rows(preview.headers, preview.rows, fields)
+    rows = [list(row) for row in preview.rows]
+    for row, item in zip(rows, normalized):
+        for role in ('start', 'end'):
+            row[preview.headers.index(fields[role])] = date.fromisoformat(item[role]) if item[role] is not None else None
+    columns = []
+    for index, field in enumerate(preview.fields):
+        value = rows[0][index]
+        kind = infer_type(_value(value), value) if isinstance(value, str) else field.type
+        if field.name in {fields['start'], fields['end']}:
+            kind = 'date'
+        columns.append(Column(field.name, kind))
+    return TabularPreview(preview.headers, rows, columns, preview.raw_rows)
+
+
 class Filter(BaseModel):
     field: str
     op: str
@@ -165,7 +233,10 @@ class ViewQuery(BaseModel):
 
 def snapshot_path(snapshot: DatasetSnapshot) -> str:
     original = Path(snapshot.storage_uri)
-    local = settings.snapshot_root / original.name
+    managed = dataset_dir(snapshot.dataset_id) / 'snapshots' / f'{snapshot.id}.parquet'
+    if managed.is_file():
+        return str(managed)
+    local = settings.snapshot_root / PureWindowsPath(snapshot.storage_uri).name
     return str(local) if not original.is_file() and local.is_file() else snapshot.storage_uri
 
 
@@ -176,16 +247,39 @@ def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
     for field in snapshot.schema_json:
         kind = ('integer' if pa.types.is_integer(arrow_schema.field(field['name']).type) else 'decimal') if field['type'] in {'number', 'integer'} else 'text'
         formats[field['name']] = field.get('display', {'kind': kind, 'format': 'number', 'decimals': 0 if kind == 'integer' else 1})
-    return {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None}
+    result = {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None, 'storage_path': f'datasets/{dataset.id}/dataset.json'}
+    result['annotation_fields'] = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
+    with SessionLocal() as session:
+        source = session.get(DynamicSource, dataset.id)
+        if source:
+            from ..dynamic import utc_iso
+            result['dynamic'] = {'duration_seconds': source.duration_seconds, 'last_run_at': utc_iso(source.last_run_at), 'next_run_at': utc_iso(source.next_run_at), 'last_error': source.last_error, 'schedule': source.schedule, 'refreshing': bool(source.lease_token)}
+    return result
 
 
-def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None) -> dict:
+
+def table_for_preview(preview):
+    columns = {field.name: [row[index] if index < len(row) else None for row in preview.rows] for index, field in enumerate(preview.fields)}
+    arrays = {}
+    for field, values in columns.items():
+        try:
+            arrays[field] = pa.array(values)
+        except (pa.ArrowInvalid, pa.ArrowTypeError):
+            arrays[field] = pa.array([None if value is None else str(value) for value in values], type=pa.string())
+    return pa.table(arrays)
+
+
+def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None, identity: str | None = None, on_publish=None, annotation_fields: dict | None = None) -> dict:
     previous_fields = {}
     if dataset_id:
         existing, previous = get_pair(dataset_id)
         if existing.version != version:
             raise HTTPException(409, '数据集已被修改，请重新打开字段配置后再试')
         previous_fields = {field['name']: field for field in previous.schema_json}
+    if annotation_fields is None:
+        annotation_fields = {field['annotation_role']: field['name'] for field in previous_fields.values() if field.get('annotation_role')}
+    if annotation_fields:
+        annotation_rows(preview.headers, preview.rows, annotation_fields)
     displays = infer_formats(preview)
     types = {field.name: field.type for field in preview.fields}
     for field in preview.fields:
@@ -197,30 +291,26 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
         if not ((types.get(field) in {'number', 'integer'} and validated.kind != 'text' and validated.dateFormat is None and validated.valueLabels is None) or (types.get(field) in {'string', 'date'} and validated.kind == 'text' and (validated.valueLabels is not None or validated.dateFormat is not None) and (types.get(field) == 'date' or validated.dateFormat is None))):
             raise ValueError('显示格式与字段类型不匹配')
         displays[field] = {**displays[field], **validated.model_dump(exclude_none=True)}
-    columns = {field.name: [row[index] if index < len(row) else None for row in preview.rows] for index, field in enumerate(preview.fields)}
-    arrays = {}
-    for field, values in columns.items():
-        try:
-            arrays[field] = pa.array(values)
-        except (pa.ArrowInvalid, pa.ArrowTypeError):
-            arrays[field] = pa.array([None if value is None else str(value) for value in values], type=pa.string())
-    table = pa.table(arrays).replace_schema_metadata({b'import_method': import_method.encode(), b'filename': (filename or '').encode()})
-    settings.snapshot_root.mkdir(parents=True, exist_ok=True)
-    candidate = settings.snapshot_root / f".{uuid4()}.parquet.tmp"
-    published = settings.snapshot_root / f"{uuid4()}.parquet"
+    table = table_for_preview(preview).replace_schema_metadata({b'import_method': import_method.encode(), b'filename': (filename or '').encode()})
+    identity = dataset_id or identity or str(uuid4())
+    snapshot_id = str(uuid4())
+    root = dataset_dir(identity) / 'snapshots'
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = root / f'.{snapshot_id}.parquet.tmp'
+    published = root / f'{snapshot_id}.parquet'
     try:
         pq.write_table(table, candidate)
         if pq.read_metadata(candidate).num_rows != len(preview.rows):
             raise ValueError("Snapshot row count validation failed")
         candidate.replace(published)
-        with SessionLocal.begin() as session:
-            dataset = session.get(Dataset, dataset_id) if dataset_id else Dataset(name=name)
+        with ExitStack() as files, SessionLocal.begin() as session:
+            dataset = session.get(Dataset, dataset_id) if dataset_id else Dataset(id=identity, name=name)
             if not dataset_id:
                 session.add(dataset); session.flush()
             schema = []
             for field in preview.fields:
-                schema.append({'name': field.name, 'type': field.type, 'display': displays[field.name], 'display_name': previous_fields.get(field.name, {}).get('display_name', field.name)})
-            snapshot = DatasetSnapshot(dataset_id=dataset.id, schema_json=schema, row_count=len(preview.rows), storage_uri=str(published.resolve()))
+                schema.append({'name': field.name, 'type': field.type, 'display': displays[field.name], 'display_name': previous_fields.get(field.name, {}).get('display_name', field.name), 'annotation_role': next((role for role, name in annotation_fields.items() if name == field.name), None)})
+            snapshot = DatasetSnapshot(id=snapshot_id, dataset_id=dataset.id, schema_json=schema, row_count=len(preview.rows), storage_uri=str(published.resolve()))
             session.add(snapshot); session.flush()
             if dataset_id:
                 result = session.execute(update(Dataset).where(Dataset.id == dataset_id, Dataset.version == version).values(name=name, version=Dataset.version + 1, current_snapshot_id=snapshot.id))
@@ -228,22 +318,27 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
                     raise HTTPException(409, '数据集已被修改，请重新打开字段配置后再试')
             else:
                 dataset.current_snapshot_id = snapshot.id
-            return dataset_payload(dataset, snapshot)
+            files.enter_context(rollback_files([dataset_dir(identity) / 'dataset.json']))
+            if on_publish:
+                on_publish(session, dataset, snapshot, files)
+            write_dataset(identity, session)
+            result = dataset_payload(dataset, snapshot)
     except Exception:
         candidate.unlink(missing_ok=True); published.unlink(missing_ok=True)
         raise
+    return result
 
 
 @router.post("/imports/paste", status_code=201)
 def import_paste(request: PasteImport) -> dict:
     if len(request.text.encode('utf-8')) > settings.max_upload_bytes:
         raise HTTPException(413, 'Input is too large')
-    preview = parse_delimited(request.text, request.delimiter, request.has_header)
-    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats), formats=request.formats, dataset_id=request.dataset_id, version=request.version)
+    preview = annotation_preview(parse_delimited(request.text, request.delimiter, request.has_header), request.annotation_order)
+    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats, request.annotation_fields), formats=request.formats, dataset_id=request.dataset_id, version=request.version, annotation_fields=request.annotation_fields)
 
 
 @router.post("/imports/files", status_code=201)
-async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False)) -> dict:
+async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False), annotation_fields: str = Form('{}'), annotation_order: str = Form('[]')) -> dict:
     suffix = (file.filename or "").lower().rsplit(".", 1)[-1]
     content = await file.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
@@ -262,7 +357,9 @@ async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet
     if not isinstance(order, list) or any(not isinstance(field, str) for field in order):
         raise ValueError('Field order must be a list of field names')
     displays = json.loads(formats)
-    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays), 'upload', file.filename, displays, dataset_id, version)
+    parsed = annotation_preview(parsed, TypeAdapter(list[str]).validate_json(annotation_order))
+    annotations = TypeAdapter(dict[str, str]).validate_json(annotation_fields)
+    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays, annotations), 'upload', file.filename, displays, dataset_id, version, annotation_fields=annotations)
 
 
 def get_pair(dataset_id: str):
@@ -305,6 +402,33 @@ def list_datasets():
         return [dataset_payload(item, session.get(DatasetSnapshot, item.current_snapshot_id)) for item in session.scalars(select(Dataset)) if item.current_snapshot_id]
 
 
+@router.delete('/datasets/{dataset_id}', status_code=204)
+def delete_dataset(dataset_id: str):
+    from datetime import datetime
+    import shutil
+    with SessionLocal.begin() as session:
+        item = session.get(Dataset, dataset_id)
+        if not item:
+            raise HTTPException(404, 'Dataset not found')
+        for model in (Dashboard, PublishedDashboard):
+            for report in session.scalars(select(model)):
+                document = report.document
+                if any(chart.get('datasetId') == dataset_id for chart in document.get('charts', [])) or any(source.get('id') == dataset_id for source in document.get('datasets', [])):
+                    raise HTTPException(409, '数据集正被报表使用，请先移除引用')
+        source = session.get(DynamicSource, dataset_id)
+        if source:
+            now = datetime.now(timezone.utc)
+            locked = session.execute(update(DynamicSource).where(DynamicSource.dataset_id == dataset_id, or_(DynamicSource.lease_until.is_(None), DynamicSource.lease_until <= now)).values(lease_token=str(uuid4()), lease_until=now))
+            if locked.rowcount != 1:
+                raise HTTPException(409, '数据集正在刷新，请稍后再试')
+        session.execute(delete(DynamicSource).where(DynamicSource.dataset_id == dataset_id))
+        session.execute(delete(DatasetSnapshot).where(DatasetSnapshot.dataset_id == dataset_id))
+        session.delete(item)
+    root = dataset_dir(dataset_id)
+    if root.exists():
+        shutil.rmtree(root)
+
+
 @router.get('/datasets/{dataset_id}/source')
 def dataset_source(dataset_id: str) -> dict:
     dataset, snapshot = get_pair(dataset_id)
@@ -338,6 +462,7 @@ class FieldsUpdate(BaseModel):
     formats: dict[str, DisplayUpdate] = Field(default_factory=dict)
     field_order: list[str] = Field(default_factory=list)
     display_names: dict[str, str] = Field(default_factory=dict)
+    annotation_fields: dict[str, str] | None = None
     confirm_conversion: bool = False
 
 
@@ -366,7 +491,10 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
         with query_slots, pq.ParquetFile(snapshot_path(snapshot)) as parquet:
             for batch in parquet.iter_batches(batch_size=65536, columns=list(review_types)):
                 for name, kind in review_types.items():
-                    preview = TabularPreview([name], [[value] for value in batch.column(name).to_pylist()], [Column(name, fields[name])])
+                    values = batch.column(name).to_pylist()
+                    if request.annotation_fields and name in {request.annotation_fields.get('start'), request.annotation_fields.get('end')}:
+                        values = [None if isinstance(value, str) and value.strip().upper() in {'', 'NULL', '[NULL]', '\\N'} else value for value in values]
+                    preview = TabularPreview([name], [[value] for value in values], [Column(name, fields[name])])
                     try:
                         convert_preview(preview, {name: kind}, formats=request.formats)
                     except HTTPException as error:
@@ -377,21 +505,42 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
                             previous['examples'] = list(dict.fromkeys([*previous['examples'], *issue['examples']]))[:3]
         if issues:
             raise HTTPException(422, detail={'code': 'type_conversion_required', 'fields': list(issues.values())})
+    annotation_fields = request.annotation_fields if request.annotation_fields is not None else {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
+    if annotation_fields:
+        annotation_rows(list(fields), [], annotation_fields)
+        with query_slots, pq.ParquetFile(snapshot_path(snapshot)) as parquet:
+            for batch in parquet.iter_batches(batch_size=65536):
+                annotation_rows(list(fields), [[row[name] for name in fields] for row in batch.to_pylist()], annotation_fields)
     formats = dataset_payload(dataset, snapshot)['field_formats']
     for name, kind in changed_types.items():
         formats[name] = {'kind': 'integer' if kind == 'integer' else 'decimal' if kind == 'number' else 'text', 'format': 'number', 'decimals': 0 if kind == 'integer' else 1}
     for name, display in request.formats.items():
         formats[name] = {**formats[name], **display.model_dump(exclude_none=True)}
     schema_json = [{**field, 'type': types[field['name']], 'display': formats[field['name']], 'display_name': request.display_names.get(field['name'], field.get('display_name', field['name'])).strip()} for field in snapshot.schema_json]
+    schema_json = [{**field, 'annotation_role': next((role for role, name in annotation_fields.items() if name == field['name']), None)} for field in schema_json]
     if request.field_order:
         positions = {name: index for index, name in enumerate(request.field_order)}
-        schema_json.sort(key=lambda field: (field['type'] in {'number', 'integer'}, positions[field['name']]))
-    with SessionLocal.begin() as session:
+        schema_json.sort(key=lambda field: (False if annotation_fields else field['type'] in {'number', 'integer'}, positions[field['name']]))
+    with ExitStack() as files, SessionLocal.begin() as session:
         result = session.execute(update(Dataset).where(Dataset.id == dataset_id, Dataset.version == request.version, Dataset.current_snapshot_id == snapshot.id).values(version=Dataset.version + 1, name=request.name.strip() if request.name is not None else dataset.name))
         if result.rowcount != 1:
             raise HTTPException(409, 'Dataset has changed; reopen field settings and try again')
+        files.enter_context(rollback_files([dataset_dir(dataset_id) / 'dataset.json']))
         session.get(DatasetSnapshot, snapshot.id).schema_json = schema_json
-        return dataset_payload(session.get(Dataset, dataset_id), session.get(DatasetSnapshot, snapshot.id))
+        source = session.get(DynamicSource, dataset_id)
+        if source and request.annotation_fields is not None:
+            source.config = {**source.config, 'annotation_fields': annotation_fields}
+        if source and source.config.get('field_settings'):
+            field_settings = {**source.config['field_settings']}
+            originals = {name.strip(): original for original, name in field_settings['renames'].items()}
+            field_settings['overrides'] = {originals.get(field['name'], field['name']): field['type'] for field in schema_json}
+            field_settings['field_order'] = [originals.get(field['name'], field['name']) for field in schema_json]
+            field_settings['formats'] = formats
+            field_settings['confirm_conversion'] = field_settings['confirm_conversion'] or request.confirm_conversion
+            source.config = {**source.config, 'field_settings': field_settings}
+        result = dataset_payload(session.get(Dataset, dataset_id), session.get(DatasetSnapshot, snapshot.id))
+        write_dataset(dataset_id, session)
+    return result
 
 
 
@@ -516,4 +665,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
         finally:
             timer.cancel()
             timer.join()
+    if request.chart_type == 'annotation':
+        fields = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
+        rows = annotation_rows(request.fields, [[row[name] for name in request.fields] for row in rows], fields)
     return {"snapshot_id": snapshot.id, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "is_sampled": False, "scope": {"limit": request.limit}, "columns": request.fields, "rows": rows}
