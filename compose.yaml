@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: workbench
       POSTGRES_USER: workbench
-      POSTGRES_PASSWORD: workbench
+      POSTGRES_PASSWORD: ${MYBI_DB_PASSWORD:?Set MYBI_DB_PASSWORD}
     volumes: [postgres-data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U workbench -d workbench"]
@@ -14,17 +14,42 @@ services:
   api:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+psycopg://workbench:workbench@db:5432/workbench
+      DATABASE_URL: postgresql+psycopg://workbench:${MYBI_DB_PASSWORD:?Set MYBI_DB_PASSWORD}@db:5432/workbench
       SNAPSHOT_ROOT: /data/snapshots
+      DATASET_ROOT: /resources/datasets
+      REPORT_ROOT: /resources/reports
+      MYBI_SECRET_KEY: ${MYBI_SECRET_KEY:?Set MYBI_SECRET_KEY}
+      MYBI_ADMIN_USER: ${MYBI_ADMIN_USER:?Set MYBI_ADMIN_USER}
+      MYBI_ADMIN_PASSWORD: ${MYBI_ADMIN_PASSWORD:?Set MYBI_ADMIN_PASSWORD}
+      MYBI_SCHEDULER: 'false'
+      DYNAMIC_TIMEOUT_SECONDS: ${DYNAMIC_TIMEOUT_SECONDS:-300}
+      DYNAMIC_MAX_ROWS: ${DYNAMIC_MAX_ROWS:-1000000}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
       MAX_RESULT_ROWS: ${MAX_RESULT_ROWS:-10000}
       QUERY_TIMEOUT_SECONDS: ${QUERY_TIMEOUT_SECONDS:-30}
       MAX_CONCURRENT_QUERIES: ${MAX_CONCURRENT_QUERIES:-2}
-    volumes: [snapshot-data:/data/snapshots]
+    volumes: [snapshot-data:/data/snapshots, resource-data:/resources]
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+  scheduler:
+    build: ./backend
+    command: ["python", "-m", "app.scheduler"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://workbench:${MYBI_DB_PASSWORD:?Set MYBI_DB_PASSWORD}@db:5432/workbench
+      SNAPSHOT_ROOT: /data/snapshots
+      DATASET_ROOT: /resources/datasets
+      REPORT_ROOT: /resources/reports
+      MYBI_SECRET_KEY: ${MYBI_SECRET_KEY:?Set MYBI_SECRET_KEY}
+      DYNAMIC_TIMEOUT_SECONDS: ${DYNAMIC_TIMEOUT_SECONDS:-300}
+      DYNAMIC_MAX_ROWS: ${DYNAMIC_MAX_ROWS:-1000000}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+    volumes: [snapshot-data:/data/snapshots, resource-data:/resources]
+    depends_on:
+      api:
+        condition: service_started
     restart: unless-stopped
   web:
     build: ./frontend
@@ -33,3 +58,4 @@ services:
 volumes:
   postgres-data:
   snapshot-data:
+  resource-data:

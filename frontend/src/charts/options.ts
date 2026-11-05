@@ -151,6 +151,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   if (option.visualMap && c.palette) option.visualMap.inRange = { color: ['#f1f5f9', chartColors(c)[0]] };
   if (option.visualMap) option.visualMap.formatter = (value: number) => metricValue(value, primary);
   if (c.type === 'histogram') option.xAxis.axisLabel = { formatter: (value: unknown) => String(value).includes('–') ? String(value).split('–').map(part => formatted(Number(part), primary)).join('–') : formatted(Number(value), primary) };
+  if (categoryAxis?.type === 'category') categoryAxis.axisLabel = { ...categoryAxis.axisLabel, interval: !c.axisLabelDensity || c.axisLabelDensity === 'auto' ? 'auto' : c.axisLabelDensity === 'all' ? 0 : Number(c.axisLabelDensity) };
   if (c.highlightWeekends && option.xAxis?.type === 'category') {
     option.xAxis.splitArea = { show: true, interval: 0, areaStyle: { color: option.xAxis.data.map((value: unknown) => {
       if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value)) return 'transparent';
@@ -228,6 +229,59 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       const heading = c.type === 'histogram' ? items[0].axisValueLabel : category(items[0].axisValue, dimension);
       return [heading, ...items.map(item => (seriesNames.get(item.seriesName) || item.seriesName) + ': ' + option.series[item.seriesIndex].tooltip.valueFormatter(item.value))].join('\n');
     } };
+  }
+  if (c.annotations?.length && option.xAxis?.type === 'category' && !c.horizontal) {
+    const dates = option.xAxis.data.map((value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value) ? Date.parse(value.slice(0, 10)) : NaN);
+    const ascending = dates.every((value: number, index: number) => Number.isFinite(value) && (!index || value >= dates[index - 1]));
+    const descending = dates.every((value: number, index: number) => Number.isFinite(value) && (!index || value <= dates[index - 1]));
+    if (dates.length && (ascending || descending)) {
+      const minimum = Math.min(...dates), maximum = Math.max(...dates);
+      const chronological = dates.map((date: number, index: number) => ({ date, index })).sort((a: any, b: any) => a.date - b.date);
+      const positionAt = (date: number) => {
+        const index = chronological.findIndex((item: any) => item.date >= date);
+        if (index <= 0) return chronological[index < 0 ? chronological.length - 1 : 0].index;
+        const before = chronological[index - 1], after = chronological[index];
+        return before.index + (after.index - before.index) * (date - before.date) / (after.date - before.date);
+      };
+      const lanes: number[] = [];
+      const spans = c.annotations.flatMap((item, index) => {
+        const start = item.start ? Date.parse(item.start) - 43200000 : minimum, end = item.end ? Date.parse(item.end) + 43200000 : maximum;
+        if (end < minimum || start > maximum) return [];
+        const from = positionAt(Math.max(minimum, start)), to = positionAt(Math.min(maximum, end));
+        return [{ ...item, startBoundary: start, endBoundary: end, from: Math.min(from, to), to: Math.max(from, to), color: chartColors(c)[index % chartColors(c).length], lane: 0 }];
+      }).sort((a, b) => a.from - b.from || a.to - b.to);
+      spans.forEach(span => {
+        let lane = lanes.findIndex(end => end < span.from || end === span.from && span.from < span.to);
+        if (lane < 0) lane = lanes.length;
+        lanes[lane] = span.to; span.lane = lane;
+      });
+      const laneHeight = 23;
+      // shortcut: keep at least 60px for the plot; compact cards may hide excess annotation lanes.
+      const visibleLanes = Math.max(0, Math.min(lanes.length, Math.floor((size.height - 140) / laneHeight)));
+      if (visibleLanes) {
+        option.grid.top = Math.max(Number(option.grid.top) || 25, 8 + visibleLanes * laneHeight);
+        option.series.push({
+          type: 'custom', silent: true, clip: false, z: 0, tooltip: { show: false },
+          data: spans.map(span => [span.from, span.to]), encode: { x: [0, 1], y: [], tooltip: [] },
+          renderItem: (params: any, api: any) => {
+            const span = spans[params.dataIndex], grid = params.coordSys;
+            const leftBound = ascending ? span.startBoundary : span.endBoundary, rightBound = ascending ? span.endBoundary : span.startBoundary;
+            const x = leftBound > minimum && leftBound < maximum ? api.coord([span.from, 0])[0] : grid.x;
+            const right = rightBound > minimum && rightBound < maximum ? Math.max(x + 2, api.coord([span.to, 0])[0]) : grid.x + grid.width;
+            const width = right - x, top = 8 + span.lane * laneHeight;
+            const children: any[] = [{ type: 'rect', shape: { x, y: grid.y, width, height: grid.height }, style: { fill: span.color, opacity: .09 } }];
+            if (span.lane < visibleLanes) children.push(
+              { type: 'rect', shape: { x, y: top, width, height: 20, r: 3 }, style: { fill: span.color, opacity: .18 } },
+              { type: 'text', style: { x: x + width / 2, y: top + 10, text: span.label, fill: span.color, fontSize: 12, fontWeight: 600, align: 'center', verticalAlign: 'middle', width: Math.max(0, width - 8), overflow: 'truncate' } },
+            );
+            for (const [bound, boundaryX] of [[ascending ? span.start : span.end, x], [ascending ? span.end : span.start, right]] as const) {
+              if (bound && Date.parse(bound) >= minimum && Date.parse(bound) <= maximum) children.push({ type: 'line', shape: { x1: boundaryX, x2: boundaryX, y1: grid.y, y2: grid.y + grid.height }, style: { stroke: span.color, lineWidth: 1, lineDash: [4, 3], opacity: .7 } });
+            }
+            return { type: 'group', children };
+          },
+        });
+      }
+    }
   }
   return option;
 }

@@ -5,19 +5,20 @@ import { FieldFormat, FieldFormats, formatField, dateFormats } from './fieldDisp
 import { Icon } from './Icon';
 
 type SettingField = { name: string; type: string; source?: string };
-export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, busy = false, defaultDecimals = 1, defaultRounding = 'halfExpand', onChange, onRename, onReorder, onEditValues, configuration = !!onRename }: {
+export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, busy = false, defaultDecimals = 1, defaultRounding = 'halfExpand', onChange, onRename, onReorder, onEditValues, preserveOrder = false, configuration = !!onRename }: {
   schema: SettingField[]; rows: Record<string, unknown>[]; typeIssues?: Record<string, string[]>; formats?: FieldFormats; busy?: boolean; defaultDecimals?: number; defaultRounding?: FieldFormat['rounding'];
   onChange: (field: string, type: string, format: FieldFormat) => void;
   onRename?: (index: number, name: string) => void;
   onReorder?: (schema: SettingField[]) => void;
   configuration?: boolean;
+  preserveOrder?: boolean;
   onEditValues?: (field: string) => void;
 }) {
   const draggedField = useRef<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const table = useRef<HTMLTableElement>(null);
   const positions = useRef(new Map<string, number>());
-  const ordered = [...schema].sort((a, b) => Number(['number', 'integer'].includes(a.type)) - Number(['number', 'integer'].includes(b.type)));
+  const ordered = preserveOrder ? schema : [...schema].sort((a, b) => Number(['number', 'integer'].includes(a.type)) - Number(['number', 'integer'].includes(b.type)));
   const dimensionCount = ordered.filter(field => !['number', 'integer'].includes(field.type)).length;
   useLayoutEffect(() => {
     table.current?.querySelectorAll<HTMLTableRowElement>('tbody tr').forEach(row => {
@@ -58,7 +59,7 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
       const animationOffset = new DOMMatrixReadOnly(getComputedStyle(e.currentTarget).transform).m42;
       const midpoint = bounds.top - animationOffset + bounds.height / 2;
       if ((from < to && e.clientY >= midpoint) || (from > to && e.clientY <= midpoint)) move(moving, field);
-    }} onDrop={e => { e.preventDefault(); e.stopPropagation(); draggedField.current = null; setDragging(null); }}>{configuration && <td>{numeric ? position - dimensionCount + 1 : position + 1}</td>}{configuration && <th className="field-source" scope="row" title={key}>{handle}{key}</th>}<td>{configuration ? <div className="field-name-control"><input readOnly={!onRename} aria-label={t("列名 {0}", index + 1)} disabled={busy} value={field.name} onChange={e => onRename?.(index, e.target.value)} />{!numeric && onEditValues && <button className="field-value-settings" disabled={busy} aria-label={t('设置 {0} 的显示对应关系', key)} title={t('值与显示名称')} onClick={() => onEditValues(key)}><Icon name="settings" /></button>}</div> : <>{handle}{field.name}</>}</td><td><select aria-label={key + t(" 字段类型")} disabled={busy} value={numeric ? 'number' : field.type} onChange={e => {
+    }} onDrop={e => { e.preventDefault(); e.stopPropagation(); draggedField.current = null; setDragging(null); }}>{configuration && <td>{!preserveOrder && numeric ? position - dimensionCount + 1 : position + 1}</td>}{configuration && <th className="field-source" scope="row" title={key}>{handle}{key}</th>}<td>{configuration ? <div className="field-name-control"><input readOnly={!onRename} aria-label={t("列名 {0}", index + 1)} disabled={busy} value={field.name} onChange={e => onRename?.(index, e.target.value)} />{!numeric && onEditValues && <button className="field-value-settings" disabled={busy} aria-label={t('设置 {0} 的显示对应关系', key)} title={t('值与显示名称')} onClick={() => onEditValues(key)}><Icon name="settings" /></button>}</div> : <>{handle}{field.name}</>}</td><td><select aria-label={key + t(" 字段类型")} disabled={busy} value={numeric ? 'number' : field.type} onChange={e => {
       const type = e.target.value;
       onChange(key, type, { kind: type === 'number' ? 'decimal' : 'text', format: 'number', rounding: defaultRounding, decimals: type === 'number' ? defaultDecimals : 0, ...(type === 'date' ? { dateFormat: 'MMM d' } : {}) });
     }}><option value="string">{t("文本")}</option><option value="date">{t("日期")}</option><option value="number">{t("数值")}</option></select></td><td>{numeric && <select aria-label={key + t(" 数值类型")} disabled={busy} value={subtype} onChange={e => {

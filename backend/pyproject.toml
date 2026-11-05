@@ -1,17 +1,20 @@
 [project]
 name = "data-workbench-api"
-version = "1.0.0"
+version = "1.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.20",
   "duckdb>=2.0",
   "fastapi>=0.161",
   "psycopg[binary]>=3.3",
+  "psycopg2-binary>=2.9.11",
   "pyarrow>=26",
   "python-calamine>=0.9",
   "python-multipart>=0.0.22",
   "sqlalchemy>=2.0",
   "uvicorn[standard]>=0.40",
+  "cryptography>=46",
+  "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]

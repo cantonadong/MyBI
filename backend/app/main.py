@@ -6,13 +6,57 @@ from .db import Base, engine
 from .api.dashboards import router as dashboards_router
 from .api.profile import router as profile_router
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
 from pathlib import Path
 import os
 import duckdb
 from sqlalchemy import inspect, text
 from python_calamine import CalamineError
+from contextlib import asynccontextmanager
+from threading import Event, Thread
+import base64
+import secrets
+from .api.sources import router as sources_router
+from .storage import materialize_existing
+from .connections import router as connections_router, migrate_connections
 
-app = FastAPI(title="Data Workbench API")
+
+@asynccontextmanager
+async def lifespan(app):
+    migrate_connections()
+    materialize_existing()
+    stop = Event()
+    worker = None
+    if os.getenv('MYBI_SCHEDULER', 'true').lower() == 'true':
+        from .scheduler import run
+        worker = Thread(target=run, args=(stop,), daemon=True)
+        worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker:
+            worker.join(timeout=2)
+
+app = FastAPI(title="Data Workbench API", lifespan=lifespan)
+
+
+@app.middleware('http')
+async def server_auth(request: Request, call_next):
+    username, password = os.getenv('MYBI_ADMIN_USER'), os.getenv('MYBI_ADMIN_PASSWORD')
+    if username or password:
+        if not username or not password:
+            return JSONResponse(status_code=503, content={'detail': 'Server credentials are not configured'})
+        try:
+            scheme, token = request.headers.get('authorization', '').split(' ', 1)
+            supplied = base64.b64decode(token, validate=True).decode('utf-8') if scheme.lower() == 'basic' else ''
+            user, secret = supplied.split(':', 1)
+            valid = secrets.compare_digest(user.encode(), username.encode()) & secrets.compare_digest(secret.encode(), password.encode())
+        except (ValueError, UnicodeError):
+            valid = False
+        if not valid:
+            return JSONResponse(status_code=401, content={'detail': 'Authentication required'}, headers={'WWW-Authenticate': 'Basic realm="MyBI", charset="UTF-8"'})
+    return await call_next(request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -26,6 +70,14 @@ with engine.begin() as connection:
 app.include_router(datasets_router)
 app.include_router(dashboards_router)
 app.include_router(profile_router)
+app.include_router(sources_router)
+app.include_router(connections_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(request: Request, error: RequestValidationError):
+    errors = [{'loc': entry['loc'], 'msg': entry['msg'], 'type': entry['type']} for entry in error.errors()]
+    return JSONResponse(status_code=422, content={'detail': errors})
 
 
 @app.exception_handler(ValueError)

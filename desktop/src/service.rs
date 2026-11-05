@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, WAIT_OBJECT_0},
+    Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0},
     Networking::WinHttp::*,
     System::Threading::{
         CREATE_NO_WINDOW, CreateMutexW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -23,11 +23,7 @@ use windows_sys::Win32::{
     },
     UI::{
         Shell::ShellExecuteW,
-        WindowsAndMessaging::{
-            EnumWindows, FlashWindow, GW_OWNER, GetWindow, GetWindowTextW,
-            GetWindowThreadProcessId, MB_ICONINFORMATION, MessageBoxW, SW_RESTORE, SW_SHOWNORMAL,
-            SetForegroundWindow, ShowWindowAsync,
-        },
+        WindowsAndMessaging::{MB_ICONINFORMATION, MessageBoxW, SW_SHOWNORMAL},
     },
 };
 
@@ -54,12 +50,15 @@ fn wide(text: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
 #[derive(Clone, Copy)]
 pub enum Action {
     Start,
+    Restart,
     Stop,
+    Exit,
 }
 pub struct Update {
     pub phase: &'static str,
     pub running: bool,
     pub busy: bool,
+    pub exiting: bool,
     pub error: Option<Failure>,
 }
 
@@ -113,7 +112,7 @@ fn health(root: &Path) -> Result<Option<Health>> {
     let deadline = Instant::now() + Duration::from_secs(3);
     unsafe {
         let session = HttpHandle::new(WinHttpOpen(
-            wide("MyBI/1.0").as_ptr(),
+            wide("MyBI/1.1").as_ptr(),
             WINHTTP_ACCESS_TYPE_NO_PROXY,
             null(),
             null(),
@@ -147,18 +146,22 @@ fn health(root: &Path) -> Result<Option<Health>> {
         {
             return Err(os_error());
         }
-        if WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) == 0 {
+        if WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) == 0
+            || WinHttpReceiveResponse(request.0, null_mut()) == 0
+        {
             let error = GetLastError();
-            if error == ERROR_WINHTTP_CANNOT_CONNECT {
+            if matches!(
+                error,
+                ERROR_WINHTTP_CANNOT_CONNECT
+                    | ERROR_WINHTTP_CONNECTION_ERROR
+                    | ERROR_WINHTTP_TIMEOUT
+            ) {
                 return Ok(None);
             }
             return Err(failure(
                 "无法检查服务状态",
                 io::Error::from_raw_os_error(error as i32),
             ));
-        }
-        if WinHttpReceiveResponse(request.0, null_mut()) == 0 {
-            return Err(os_error());
         }
         let mut status: u32 = 0;
         let mut length = size_of_val(&status) as u32;
@@ -207,64 +210,6 @@ fn health(root: &Path) -> Result<Option<Health>> {
     }
 }
 
-fn restore_existing_window(root: &Path) -> bool {
-    struct Search<'a> {
-        root: &'a Path,
-        window: HWND,
-    }
-    unsafe extern "system" fn find(window: HWND, context: LPARAM) -> i32 {
-        unsafe {
-            let search = &mut *(context as *mut Search<'_>);
-            let mut title = [0u16; 64];
-            let length = GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32);
-            if String::from_utf16_lossy(&title[..length as usize]) != "MyBI"
-                || !GetWindow(window, GW_OWNER).is_null()
-            {
-                return 1;
-            }
-            let mut pid = 0;
-            GetWindowThreadProcessId(window, &mut pid);
-            let raw = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if raw.is_null() {
-                return 1;
-            }
-            let process = OwnedHandle::from_raw_handle(raw);
-            let mut image = [0u16; 32768];
-            let mut size = image.len() as u32;
-            if QueryFullProcessImageNameW(process.as_raw_handle(), 0, image.as_mut_ptr(), &mut size)
-                == 0
-            {
-                return 1;
-            }
-            let image = PathBuf::from(String::from_utf16_lossy(&image[..size as usize]));
-            if !image.parent().is_some_and(|parent| {
-                parent
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&search.root.to_string_lossy())
-            }) {
-                return 1;
-            }
-            search.window = window;
-            0
-        }
-    }
-    let mut search = Search {
-        root,
-        window: null_mut(),
-    };
-    unsafe {
-        EnumWindows(Some(find), &mut search as *mut _ as LPARAM);
-        if search.window.is_null() {
-            return false;
-        }
-        ShowWindowAsync(search.window, SW_RESTORE);
-        if SetForegroundWindow(search.window) == 0 {
-            FlashWindow(search.window, 1);
-        }
-    }
-    true
-}
-
 pub fn single_instance(root: &Path) -> Result<Option<OwnedHandle>> {
     let mut hash = DefaultHasher::new();
     root.to_string_lossy().to_lowercase().hash(&mut hash);
@@ -276,21 +221,7 @@ pub fn single_instance(root: &Path) -> Result<Option<OwnedHandle>> {
         }
         let exists = GetLastError() == ERROR_ALREADY_EXISTS;
         let handle = OwnedHandle::from_raw_handle(handle);
-        if exists {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                if restore_existing_window(root) {
-                    return Ok(None);
-                }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(failure("MyBI 服务管理窗口已经打开，请从任务栏切换。", ""))
-        } else {
-            Ok(Some(handle))
-        }
+        if exists { Ok(None) } else { Ok(Some(handle)) }
     }
 }
 
@@ -406,6 +337,7 @@ fn start(root: &Path, child: &mut Option<Child>, updates: &Sender<Update>) -> Re
         phase: "启动中…",
         running: false,
         busy: true,
+        exiting: false,
         error: None,
     });
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -448,7 +380,18 @@ fn start(root: &Path, child: &mut Option<Child>, updates: &Sender<Update>) -> Re
     }
 }
 
-fn stop(root: &Path) -> Result<()> {
+fn stop(root: &Path, child: &mut Option<Child>) -> Result<()> {
+    if let Some(process) = child.as_mut() {
+        if process
+            .try_wait()
+            .map_err(|e| failure("无法停止服务", e))?
+            .is_none()
+        {
+            process.kill().map_err(|e| failure("无法停止服务", e))?;
+        }
+        process.wait().map_err(|e| failure("无法停止服务", e))?;
+        *child = None;
+    }
     let Some(before) = health(root)? else {
         return Ok(());
     };
@@ -494,9 +437,20 @@ pub fn run(root: PathBuf, commands: Receiver<Action>, updates: Sender<Update>) {
     loop {
         let result = match action {
             Some(Action::Start) => start(&root, &mut child, &updates),
-            Some(Action::Stop) => stop(&root),
+            Some(Action::Restart) => {
+                stop(&root, &mut child).and_then(|()| start(&root, &mut child, &updates))
+            }
+            Some(Action::Stop | Action::Exit) => stop(&root, &mut child),
             None => Ok(()),
         };
+        let exiting = matches!(action, Some(Action::Exit)) && result.is_ok();
+        let result = result.and_then(|()| {
+            if matches!(action, Some(Action::Start | Action::Restart)) {
+                open_browser()
+            } else {
+                Ok(())
+            }
+        });
         if action.is_some() {
             last_error = result.err();
         }
@@ -523,10 +477,14 @@ pub fn run(root: PathBuf, commands: Receiver<Action>, updates: Sender<Update>) {
                 phase: if running { "运行中" } else { "已停止" },
                 running,
                 busy: false,
+                exiting,
                 error: last_error.clone(),
             })
             .is_err()
         {
+            break;
+        }
+        if exiting {
             break;
         }
         action = match commands.recv_timeout(Duration::from_secs(3)) {
@@ -535,7 +493,6 @@ pub fn run(root: PathBuf, commands: Receiver<Action>, updates: Sender<Update>) {
             Err(RecvTimeoutError::Disconnected) => break,
         };
     }
-    // Dropping Child closes our handles without stopping the browser's service.
 }
 
 #[cfg(test)]

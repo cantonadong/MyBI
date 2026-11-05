@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Float
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -28,6 +28,27 @@ class DatasetSnapshot(Base):
     storage_uri: Mapped[str] = mapped_column(String(1000), unique=True)
     status: Mapped[str] = mapped_column(String(20), default="SUCCEEDED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class DynamicSource(Base):
+    __tablename__ = 'dynamic_sources'
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id'), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class SavedConnection(Base):
+    __tablename__ = 'saved_connections'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class Dashboard(Base):

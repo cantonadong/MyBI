@@ -17,6 +17,8 @@ frontend/vite.config.ts.timestamp-*
 MyBI.exe
 artifacts/
 data/
+datasets/
+reports/
 runtime/
 desktop/target/
 tests/*-tested.png

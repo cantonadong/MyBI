@@ -9,7 +9,7 @@ import zipfile
 root = Path(__file__).resolve().parents[1]
 output = root / 'artifacts'
 output.mkdir(exist_ok=True)
-stage = output / 'MyBI-v1.0-Windows-x64'
+stage = output / 'MyBI-v1.1-Windows-x64'
 if stage.exists():
     if stage.resolve().parent != output.resolve():
         raise ValueError('Release directory is outside artifacts')
@@ -57,7 +57,7 @@ else:
             if child.marker is None or any(child.marker.evaluate({'extra': extra}) for extra in extras | {''}):
                 pending.append(str(child))
 
-for name in ('MyBI.exe', 'run.bat', 'README.md'):
+for name in ('MyBI.exe', 'README.md'):
     shutil.copy2(root / name, stage / name)
 shutil.copytree(root / 'backend/app', stage / 'backend/app', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2(root / 'backend/pyproject.toml', stage / 'backend/pyproject.toml')

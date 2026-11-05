@@ -3,9 +3,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update, func, delete
 from datetime import datetime, timezone
 from getpass import getuser
+from contextlib import ExitStack
 from ..db import SessionLocal
-from ..models import Dashboard, PublishedDashboard, ChartComment, UserProfile
+from ..models import Dashboard, PublishedDashboard, ChartComment, UserProfile, DynamicSource, new_id
 from .datasets import get_pair, dataset_payload
+from ..storage import write_report, rollback_files
+from ..settings import settings
 
 router = APIRouter(prefix='/api/dashboards')
 
@@ -26,14 +29,19 @@ class AddComment(BaseModel):
 
 @router.post('/{dashboard_id}/publish')
 def publish_dashboard(dashboard_id: str, body: PublishDashboard):
-    with SessionLocal.begin() as session:
+    with ExitStack() as files, SessionLocal.begin() as session:
         item = session.get(Dashboard, dashboard_id)
         if not item:
             raise HTTPException(404, 'Dashboard not found')
         if item.version != body.version:
             raise HTTPException(409, 'Dashboard changed; reopen before publishing')
+        locked = session.execute(update(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.version == body.version).values(version=body.version))
+        if locked.rowcount != 1:
+            raise HTTPException(409, 'Dashboard changed; reopen before publishing')
+        files.enter_context(rollback_files([settings.report_root / f'{dashboard_id}.json']))
         document = {key: value for key, value in item.document.items() if key != '_mybi'}
         ids = {chart['datasetId'] for chart in document.get('charts', []) if chart.get('datasetId')}
+        ids.update(source['id'] for source in document.get('datasets', []) if source.get('annotation_fields'))
         document['datasets'] = [dataset_payload(*get_pair(source_id)) for source_id in ids]
         published = session.get(PublishedDashboard, dashboard_id)
         if not published:
@@ -42,6 +50,7 @@ def publish_dashboard(dashboard_id: str, body: PublishDashboard):
         published.name = item.name
         published.document = document
         published.theme = body.theme
+        write_report(dashboard_id, session)
     return {'id': dashboard_id}
 
 
@@ -51,7 +60,8 @@ def get_published(dashboard_id: str):
         item = session.get(PublishedDashboard, dashboard_id)
         if not item:
             raise HTTPException(404, 'Report has not been published')
-        return {'id': item.id, 'name': item.name, 'document': item.document, 'theme': item.theme}
+        document = {**item.document, 'datasets': [dataset_payload(*get_pair(source['id'])) if session.get(DynamicSource, source.get('id')) else source for source in item.document.get('datasets', [])]}
+        return {'id': item.id, 'name': item.name, 'document': document, 'theme': item.theme}
 
 
 @router.get('/{dashboard_id}/comment-counts')
@@ -111,7 +121,7 @@ def delete_comment(dashboard_id: str, chart_id: str, comment_id: str):
 
 def payload(item):
     metadata = item.document.get('_mybi', {})
-    return {'id': item.id, 'name': item.name, 'document': {key: value for key, value in item.document.items() if key != '_mybi'}, 'version': item.version, 'owner': metadata.get('owner'), 'updated_at': metadata.get('updated_at')}
+    return {'id': item.id, 'name': item.name, 'document': {key: value for key, value in item.document.items() if key != '_mybi'}, 'version': item.version, 'owner': metadata.get('owner'), 'updated_at': metadata.get('updated_at'), 'storage_path': f'reports/{item.id}.json'}
 
 
 def saved_document(document, owner=None):
@@ -124,11 +134,15 @@ def list_dashboards():
 
 @router.post('', status_code=201)
 def create_dashboard(body: SaveDashboard):
-    with SessionLocal.begin() as session:
-        item = Dashboard(name=body.name, document=saved_document(body.document))
+    report_id = new_id()
+    with ExitStack() as files, SessionLocal.begin() as session:
+        item = Dashboard(id=report_id, name=body.name, document=saved_document(body.document))
         session.add(item)
         session.flush()
-        return payload(item)
+        files.enter_context(rollback_files([settings.report_root / f'{report_id}.json']))
+        result = payload(item)
+        write_report(item.id, session)
+    return result
 
 @router.get('/{dashboard_id}')
 def get_dashboard(dashboard_id: str):
@@ -140,7 +154,7 @@ def get_dashboard(dashboard_id: str):
 
 @router.put('/{dashboard_id}')
 def save_dashboard(dashboard_id: str, body: SaveDashboard):
-    with SessionLocal.begin() as session:
+    with ExitStack() as files, SessionLocal.begin() as session:
         current = session.get(Dashboard, dashboard_id)
         if not current:
             raise HTTPException(404, 'Dashboard not found')
@@ -148,11 +162,14 @@ def save_dashboard(dashboard_id: str, body: SaveDashboard):
         result = session.execute(update(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.version == body.version).values(name=body.name, document=document, version=body.version + 1))
         if result.rowcount != 1:
             raise HTTPException(409, 'Dashboard changed; reopen before saving')
-        return payload(session.get(Dashboard, dashboard_id))
+        files.enter_context(rollback_files([settings.report_root / f'{dashboard_id}.json']))
+        result = payload(session.get(Dashboard, dashboard_id))
+        write_report(dashboard_id, session)
+    return result
 
 @router.delete('/{dashboard_id}', status_code=204)
 def delete_dashboard(dashboard_id: str):
-    with SessionLocal.begin() as session:
+    with ExitStack() as files, SessionLocal.begin() as session:
         item = session.get(Dashboard, dashboard_id)
         if not item:
             raise HTTPException(404, 'Dashboard not found')
@@ -161,3 +178,6 @@ def delete_dashboard(dashboard_id: str):
         if published:
             session.delete(published)
         session.execute(delete(ChartComment).where(ChartComment.dashboard_id == dashboard_id))
+        session.flush()
+        files.enter_context(rollback_files([settings.report_root / f'{dashboard_id}.json']))
+        write_report(dashboard_id, session)

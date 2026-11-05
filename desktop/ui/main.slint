@@ -40,6 +40,13 @@ export component ManagerWindow inherits Window {
     callback stop-service();
     callback open-report();
 
+    ContextMenuArea {
+        width: 100%; height: 100%;
+        Menu {
+            MenuItem { title: root.start-text; enabled: !root.busy; activated => { root.start-service(); } }
+            MenuItem { title: root.stop-text; enabled: !root.busy && root.running; activated => { root.stop-service(); } }
+            MenuItem { title: root.open-text; enabled: !root.busy && root.running; activated => { root.open-report(); } }
+        }
     VerticalBox {
         padding: 22px;
         spacing: 14px;
@@ -67,7 +74,7 @@ export component ManagerWindow inherits Window {
         }
         HorizontalBox {
             spacing: 8px;
-            CompactButton { text: root.start-text; enabled: !root.busy && !root.running; clicked => { root.start-service(); } }
+            CompactButton { text: root.start-text; enabled: !root.busy; clicked => { root.start-service(); } }
             CompactButton { text: root.stop-text; enabled: !root.busy && root.running; clicked => { root.stop-service(); } }
             CompactButton { text: root.open-text; enabled: !root.busy && root.running; clicked => { root.open-report(); } }
             Rectangle { horizontal-stretch: 1; }
@@ -78,5 +85,6 @@ export component ManagerWindow inherits Window {
         if root.error-text == "": Rectangle { vertical-stretch: 1; }
         Text { text: root.close-hint; color: #697286; wrap: word-wrap; }
         Text { text: root.logs-text; color: #8790a4; wrap: word-wrap; font-size: 11px; }
+    }
     }
 }
