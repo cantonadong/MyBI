@@ -49,7 +49,14 @@ def _value(raw: str) -> object:
             return raw
 
 
-def infer_type(value: object, raw: object = None) -> str:
+def text_field(name: str) -> bool:
+    name = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name)
+    return bool(re.search(r'(?:^|[^a-z])(?:version|ver)(?:$|[^a-z])|版本', name, re.IGNORECASE))
+
+
+def infer_type(value: object, raw: object = None, name: str = '') -> str:
+    if text_field(name):
+        return 'string'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if isinstance(raw, str) and any(marker in raw.lower() for marker in ['.', 'e', '%']):
             return 'number'
@@ -90,7 +97,7 @@ def parse_delimited(text: str, delimiter: str | None = None, has_header: bool = 
         raise ValueError('Row column count does not match header')
     fields = []
     for index, header in enumerate(headers):
-        field_type = infer_type(rows[0][index], records[0][index])
+        field_type = infer_type(rows[0][index], records[0][index], header)
         fields.append(Field(header, field_type))
         if field_type == 'string':
             for row_index, row in enumerate(rows):

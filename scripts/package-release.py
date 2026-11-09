@@ -9,7 +9,7 @@ import zipfile
 root = Path(__file__).resolve().parents[1]
 output = root / 'artifacts'
 output.mkdir(exist_ok=True)
-stage = output / 'MyBI-v1.1-Windows-x64'
+stage = output / 'MyBI-v1.2-Windows-x64'
 if stage.exists():
     if stage.resolve().parent != output.resolve():
         raise ValueError('Release directory is outside artifacts')

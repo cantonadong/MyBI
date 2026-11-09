@@ -10,3 +10,4 @@
 - UI terminology: the second sidebar is the toolbar; the right sidebar is the properties sidebar. Filter controls are added from the toolbar, appear on the canvas, and are configured in the properties sidebar after selection.
 - Filtering is controlled exclusively through toolbar-added canvas filters. Do not expose per-chart filter modes or apply legacy hidden filter conditions.
 - Filter controls can use only text and date dimensions, never numeric fields. This applies to field choices, cascading defaults, and restored saved filters.
+- All data lists use pagination with 10 rows per page.

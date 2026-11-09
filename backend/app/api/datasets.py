@@ -5,6 +5,8 @@ from io import StringIO
 from pathlib import Path, PureWindowsPath
 import json
 import math
+import hashlib
+from functools import lru_cache
 from decimal import Decimal
 from threading import BoundedSemaphore, Timer
 from uuid import uuid4
@@ -68,8 +70,8 @@ class PasteImport(BaseModel):
 def convert_preview(preview, overrides, renames=None, field_order=None, confirm_conversion=False, formats=None, annotation_fields=None):
     from ..imports.delimited import Field as Column, TabularPreview
     if field_order:
-        if len(field_order) != len(preview.headers) or set(field_order) != set(preview.headers):
-            raise ValueError('Field order must contain every field exactly once')
+        if len(field_order) != len(set(field_order)) or not set(field_order).issubset(preview.headers):
+            raise ValueError('Field order must contain valid unique fields')
         indices = [preview.headers.index(name) for name in field_order]
         if not annotation_fields:
             indices.sort(key=lambda index: overrides.get(preview.fields[index].name, preview.fields[index].type) in {'number', 'integer'})
@@ -158,6 +160,8 @@ def annotation_date(value):
     if isinstance(value, date):
         return date.fromisoformat(value.isoformat()[:10])
     text = str(value).strip()
+    if text.isdigit() and len(text) in {6, 8}:
+        return datetime.strptime(('20' + text) if len(text) == 6 else text, '%Y%m%d').date()
     return datetime.strptime(text, '%Y/%m/%d').date() if '/' in text else date.fromisoformat(text)
 
 
@@ -199,7 +203,11 @@ def annotation_preview(preview, order):
     columns = []
     for index, field in enumerate(preview.fields):
         value = rows[0][index]
-        kind = infer_type(_value(value), value) if isinstance(value, str) else field.type
+        kind = infer_type(_value(value), value, field.name) if isinstance(value, str) else field.type
+        if field.name == fields['label']:
+            kind = 'string'
+            for row, item in zip(rows, normalized):
+                row[index] = item['label']
         if field.name in {fields['start'], fields['end']}:
             kind = 'date'
         columns.append(Column(field.name, kind))
@@ -222,6 +230,8 @@ class ViewQuery(BaseModel):
     dimensions: list[str] = Field(default_factory=list, max_length=32)
     measure: str | None = None
     aggregation: str | None = None
+    metric_aggregations: dict[str, str] = Field(default_factory=dict)
+    sort_measure: str | None = None
     sort: str = 'none'
     measures: list[str] = Field(default_factory=list, max_length=32)
     second_measure: str | None = None
@@ -240,6 +250,12 @@ def snapshot_path(snapshot: DatasetSnapshot) -> str:
     return str(local) if not original.is_file() and local.is_file() else snapshot.storage_uri
 
 
+@lru_cache(maxsize=256)
+def file_fingerprint(path: str, size: int, modified: int) -> str:
+    with open(path, 'rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
 def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
     arrow_schema = pq.read_schema(snapshot_path(snapshot))
     metadata = arrow_schema.metadata or {}
@@ -252,8 +268,16 @@ def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
     with SessionLocal() as session:
         source = session.get(DynamicSource, dataset.id)
         if source:
-            from ..dynamic import utc_iso
+            from ..dynamic import utc_iso, fingerprint
+            try:
+                result['fingerprint'] = fingerprint(source.config)
+            except HTTPException:
+                result['fingerprint'] = None
             result['dynamic'] = {'duration_seconds': source.duration_seconds, 'last_run_at': utc_iso(source.last_run_at), 'next_run_at': utc_iso(source.next_run_at), 'last_error': source.last_error, 'schedule': source.schedule, 'refreshing': bool(source.lease_token)}
+        else:
+            path = snapshot_path(snapshot)
+            stat = Path(path).stat()
+            result['fingerprint'] = file_fingerprint(path, stat.st_size, stat.st_mtime_ns)
     return result
 
 
@@ -403,7 +427,7 @@ def list_datasets():
 
 
 @router.delete('/datasets/{dataset_id}', status_code=204)
-def delete_dataset(dataset_id: str):
+def delete_dataset(dataset_id: str, confirm_references: bool = False):
     from datetime import datetime
     import shutil
     with SessionLocal.begin() as session:
@@ -414,7 +438,8 @@ def delete_dataset(dataset_id: str):
             for report in session.scalars(select(model)):
                 document = report.document
                 if any(chart.get('datasetId') == dataset_id for chart in document.get('charts', [])) or any(source.get('id') == dataset_id for source in document.get('datasets', [])):
-                    raise HTTPException(409, '数据集正被报表使用，请先移除引用')
+                    if not confirm_references:
+                        raise HTTPException(409, '数据集正被报表使用，请确认删除')
         source = session.get(DynamicSource, dataset_id)
         if source:
             now = datetime.now(timezone.utc)
@@ -427,6 +452,27 @@ def delete_dataset(dataset_id: str):
     root = dataset_dir(dataset_id)
     if root.exists():
         shutil.rmtree(root)
+
+
+@router.get('/datasets/{dataset_id}/references')
+def dataset_references(dataset_id: str):
+    with SessionLocal() as session:
+        if not session.get(Dataset, dataset_id):
+            raise HTTPException(404, 'Dataset not found')
+        references = []
+        seen = set()
+        for model in (Dashboard, PublishedDashboard):
+            for report in session.scalars(select(model).order_by(model.name, model.id)):
+                charts = [chart for chart in report.document.get('charts', []) if chart.get('datasetId') == dataset_id]
+                if not charts and any(source.get('id') == dataset_id for source in report.document.get('datasets', [])):
+                    charts = [{}]
+                for chart in charts:
+                    title = chart.get('config', {}).get('title', '')
+                    key = (report.id, chart.get('id'), title)
+                    if key not in seen:
+                        seen.add(key)
+                        references.append({'report_id': report.id, 'report_name': report.name, 'chart_id': chart.get('id'), 'chart_title': title})
+        return references
 
 
 @router.get('/datasets/{dataset_id}/source')
@@ -475,8 +521,9 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
     if dataset.version != request.version:
         raise HTTPException(409, '数据集已被修改，请取消并重新打开预览后再试')
     fields = {field['name']: field['type'] for field in snapshot.schema_json}
-    if request.field_order and (len(request.field_order) != len(fields) or set(request.field_order) != set(fields)):
-        raise HTTPException(422, 'Field order must contain every field exactly once')
+    if request.field_order and (len(request.field_order) != len(set(request.field_order)) or not set(request.field_order).issubset(fields)):
+        raise HTTPException(422, 'Field order must contain valid unique fields')
+    kept_fields = request.field_order or list(fields)
     if not (request.types.keys() | request.formats.keys() | request.display_names.keys()) <= fields.keys():
         raise HTTPException(422, 'Unknown field')
     if any(not name.strip() or len(name.strip()) > 255 for name in request.display_names.values()):
@@ -507,15 +554,36 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
             raise HTTPException(422, detail={'code': 'type_conversion_required', 'fields': list(issues.values())})
     annotation_fields = request.annotation_fields if request.annotation_fields is not None else {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
     if annotation_fields:
-        annotation_rows(list(fields), [], annotation_fields)
+        annotation_rows(kept_fields, [], annotation_fields)
         with query_slots, pq.ParquetFile(snapshot_path(snapshot)) as parquet:
-            for batch in parquet.iter_batches(batch_size=65536):
-                annotation_rows(list(fields), [[row[name] for name in fields] for row in batch.to_pylist()], annotation_fields)
+            for batch in parquet.iter_batches(batch_size=65536, columns=kept_fields):
+                annotation_rows(kept_fields, [[row[name] for name in kept_fields] for row in batch.to_pylist()], annotation_fields)
     formats = dataset_payload(dataset, snapshot)['field_formats']
     for name, kind in changed_types.items():
         formats[name] = {'kind': 'integer' if kind == 'integer' else 'decimal' if kind == 'number' else 'text', 'format': 'number', 'decimals': 0 if kind == 'integer' else 1}
     for name, display in request.formats.items():
         formats[name] = {**formats[name], **display.model_dump(exclude_none=True)}
+    if len(kept_fields) < len(fields):
+        with query_slots:
+            table = pq.read_table(snapshot_path(snapshot), columns=kept_fields)
+        metadata = table.schema.metadata or {}
+        preview = TabularPreview(kept_fields, [[row[name] for name in kept_fields] for row in table.to_pylist()], [Column(name, types[name]) for name in kept_fields])
+        displays = {name: formats[name] for name in kept_fields if types[name] in {'number', 'integer'} or formats[name].get('dateFormat') or formats[name].get('valueLabels') is not None}
+        def on_publish(session, item, updated, files):
+            updated.schema_json = [{**field, 'display_name': request.display_names.get(field['name'], field['display_name']).strip()} for field in updated.schema_json]
+            source = session.get(DynamicSource, dataset_id)
+            if source:
+                previous = source.config.get('field_settings', {})
+                originals = {name.strip(): original for original, name in previous.get('renames', {}).items()}
+                settings = {
+                    'overrides': {originals.get(field.name, field.name): field.type for field in preview.fields},
+                    'renames': {originals.get(name, name): name for name in kept_fields},
+                    'field_order': [originals.get(name, name) for name in kept_fields],
+                    'formats': displays,
+                    'confirm_conversion': previous.get('confirm_conversion', False) or request.confirm_conversion,
+                }
+                source.config = {**source.config, 'annotation_fields': annotation_fields, 'field_settings': settings}
+        return publish(request.name.strip() if request.name is not None else dataset.name, preview, metadata.get(b'import_method', b'paste').decode(), metadata.get(b'filename', b'').decode() or None, displays, dataset_id, request.version, on_publish=on_publish, annotation_fields=annotation_fields)
     schema_json = [{**field, 'type': types[field['name']], 'display': formats[field['name']], 'display_name': request.display_names.get(field['name'], field.get('display_name', field['name'])).strip()} for field in snapshot.schema_json]
     schema_json = [{**field, 'annotation_role': next((role for role, name in annotation_fields.items() if name == field['name']), None)} for field in schema_json]
     if request.field_order:
@@ -609,11 +677,20 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
         source = '(SELECT ' + ','.join(interpreted) + ' FROM read_parquet(?))'
     projection = ','.join(map(quote, request.fields))
     group = ' GROUP BY ' + projection if request.distinct else ''
+    if request.chart_type == 'date-range':
+        if len(request.fields) != 1 or types[request.fields[0]] not in {'string', 'date'}:
+            raise HTTPException(422, 'Date ranges require a text or date field')
+        field = f'TRY_CAST({quote(request.fields[0])} AS DATE)'
+        projection = f'MIN({field}) AS __start, MAX({field}) AS __end'
+        group = ''
     if request.aggregation:
         if request.aggregation not in {'sum', 'avg', 'count', 'min', 'max', 'count_distinct'} or request.measure not in allowed or (request.dimension and request.dimension not in allowed):
             raise HTTPException(422, 'Invalid aggregation')
+        if any(field not in allowed or method not in {'sum', 'avg', 'count', 'min', 'max', 'count_distinct'} for field, method in request.metric_aggregations.items()):
+            raise HTTPException(422, 'Invalid metric aggregation')
+        aggregation = request.metric_aggregations.get(request.measure, request.aggregation)
         metric = compile_expression(request.metric_expression, allowed) if request.metric_expression else quote(request.measure)
-        expression = f'COUNT(DISTINCT {metric})' if request.aggregation == 'count_distinct' else f'{request.aggregation.upper()}({metric})'
+        expression = f'COUNT(DISTINCT {metric})' if aggregation == 'count_distinct' else f'{aggregation.upper()}({metric})'
         dimensions = list(dict.fromkeys([*(request.dimensions or ([request.dimension] if request.dimension else [])), *([request.second_dimension] if request.second_dimension else [])]))
         dimension_sql = ','.join(map(quote, dimensions))
         projection = (dimension_sql + ',' if dimensions else '') + expression + ' AS ' + quote(request.measure)
@@ -622,16 +699,37 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
             if not field or field == request.measure:
                 continue
             second = quote(field)
-            expression2 = f'COUNT(DISTINCT {second})' if request.aggregation == 'count_distinct' else f'{request.aggregation.upper()}({second})'
+            aggregation = request.metric_aggregations.get(field, request.aggregation)
+            expression2 = f'COUNT(DISTINCT {second})' if aggregation == 'count_distinct' else f'{aggregation.upper()}({second})'
             projection += ', ' + expression2 + ' AS ' + second
+    if request.chart_type == 'candlestick':
+        if not request.dimension or len(request.measures) != 4 or len(set(request.measures)) != 4 or any(types.get(field) not in {'number', 'integer'} for field in request.measures):
+            raise HTTPException(422, '蜡烛图需要四个不同的数值字段')
+        candle_order = '__dw_candle_order'
+        while candle_order in allowed:
+            candle_order += '_'
+        source = f'(SELECT *, row_number() OVER () AS {quote(candle_order)} FROM {source})'
+        opening, closing, low, high = map(quote, request.measures)
+        projection = f'{quote(request.dimension)}, FIRST({opening} ORDER BY {quote(candle_order)}) AS {opening}, LAST({closing} ORDER BY {quote(candle_order)}) AS {closing}, MIN({low}) AS {low}, MAX({high}) AS {high}'
+        group = ' GROUP BY ' + quote(request.dimension)
     if request.chart_type == 'boxplot':
         if not request.dimension or not request.measure:
             raise HTTPException(422, 'Boxplot requires a dimension and numeric measure')
         projection = quote(request.dimension) + ', quantile_cont(' + quote(request.measure) + ', [0, 0.25, 0.5, 0.75, 1]) AS __box'
         group = ' GROUP BY ' + quote(request.dimension)
     order = ''
-    if request.sort in {'asc', 'desc'} and request.measure in allowed and request.chart_type != 'boxplot':
-        order = f' ORDER BY {quote(request.measure)} {request.sort.upper()}'
+    sort_measure = request.sort_measure or request.measure
+    if request.sort_measure and request.sort_measure not in [request.measure, *request.measures, request.second_measure]:
+        raise HTTPException(422, 'Invalid sort measure')
+    if request.sort in {'asc', 'desc'} and sort_measure in allowed and request.chart_type != 'boxplot':
+        order = f' ORDER BY {quote(sort_measure)} {request.sort.upper()}'
+        if request.aggregation and request.second_dimension and request.chart_type in {'bar', 'line', 'area', 'mixed'}:
+            axis_dimensions = request.dimensions or ([request.dimension] if request.dimension else [])
+            if axis_dimensions:
+                method = request.metric_aggregations.get(sort_measure, request.aggregation)
+                value = compile_expression(request.metric_expression, allowed) if sort_measure == request.measure and request.metric_expression else quote(sort_measure)
+                aggregate = f'COUNT(DISTINCT {value})' if method == 'count_distinct' else f'{method.upper()}({value})'
+                order = f' ORDER BY SUM({aggregate}) OVER (PARTITION BY {",".join(map(quote, axis_dimensions))}) {request.sort.upper()}'
     if group and not order:
         order_field = '__dw_row_order'
         while order_field in allowed:

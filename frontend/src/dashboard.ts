@@ -5,22 +5,41 @@ export type Filter = { sourceId?: string; datasetId?: string; field: string; op:
 export type FilterMode = 'global' | 'local' | 'both';
 export type AnnotationFields = Record<'start' | 'end' | 'label', string>;
 export type Annotation = { start: string | null; end: string | null; label: string };
-export type Dataset = { annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
+export type Dataset = { fingerprint?: string; annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
 export type Tile = { id: string; datasetId: string; config: ChartConfig; followFilterIds?: string[]; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
 export type CanvasGrid = { columns: number; rows: number };
 export type InsertSide = 'left' | 'right' | 'top' | 'bottom';
-export type Document = { highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
+export type Document = { showGuides?: boolean; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
 export type SavedReport = { id: string; name: string; owner?: string | null; updated_at?: string | null };
+export function chartTitle(config: ChartConfig, dataset?: Dataset): string {
+  if (config.type === 'filter' || config.autoTitle === false) return config.title || '';
+  const label = (name: string) => {
+    const text = dataset?.schema.find(field => field.name === name)?.display_name || name;
+    return text.split('_').map((word, index) => index && ['a', 'an', 'the', 'and', 'or', 'but', 'by', 'for', 'per', 'of', 'to', 'in', 'on', 'at', 'as', 'with', 'from', 'via', 'vs'].includes(word.toLowerCase()) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1)).join('_');
+  };
+  const multiple = ['bar', 'line', 'area', 'mixed', 'candlestick'].includes(config.type);
+  const metrics = (multiple ? config.measures || [config.measure, config.secondMeasure] : [config.measure, ...(config.type === 'scatter' ? [config.secondMeasure] : [])]).filter((field): field is string => !!field).map(field => {
+    const method = config.metricAggregations?.[field] || config.aggregation || 'sum';
+    return label(field) + (method === 'sum' || ['scatter', 'histogram', 'boxplot', 'candlestick'].includes(config.type) ? '' : ` (${method})`);
+  }).join(', ');
+  const dimensions = (['kpi', 'gauge', 'histogram'].includes(config.type) ? [] : multiple && config.type !== 'candlestick' ? config.dimensions || [config.dimension] : [config.dimension]).filter((field): field is string => !!field).map(label).join(', ');
+  return metrics ? metrics + (dimensions ? ' by ' + dimensions : '') : config.title || '';
+}
+export function chartSort(config: ChartConfig, dataset?: Dataset): string {
+  if (config.sort) return config.sort;
+  if (config.xAxisSort && config.xAxisSort !== 'none') return 'none';
+  const dimensions = config.dimensions || [config.dimension];
+  return dimensions.some(name => dataset?.schema.find(field => field.name === name)?.type === 'date' || /date|time|version|month|week|year|quarter|日期|时间|版本|月份|季度|年份/i.test(name || '')) ? 'none' : 'desc';
+}
 export function filterMatchesChart(tile: Tile, filter: Tile, dataset?: Dataset): boolean {
   if (filter.config.type !== 'filter' || tile.datasetId !== filter.datasetId || !dataset) return false;
   const schema = dataset.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => field.name);
-  const dimensions = ['table', 'kpi', 'gauge', 'histogram'].includes(tile.config.type) ? schema : [...(tile.config.dimensions || [tile.config.dimension]), tile.config.secondDimension, tile.config.legendField];
   const fields = filter.config.filterStyle === 'cascade' ? filter.config.filterFields || [] : [filter.config.dimension];
-  return fields.length > 0 && fields.every(field => !!field && schema.includes(field) && dimensions.includes(field));
+  return fields.some(field => !!field && schema.includes(field));
 }
 export function followedFilterIds(tile: Tile, charts: Tile[], dataset?: Dataset): string[] {
   if (tile.followFilterIds) return charts.filter(chart => tile.followFilterIds!.includes(chart.id) && filterMatchesChart(tile, chart, dataset)).map(chart => chart.id);
-  const above = charts.filter(chart => chart.config.type === 'filter' && chart.y + chart.h <= tile.y);
+  const above = charts.filter(chart => chart.y + chart.h <= tile.y && filterMatchesChart(tile, chart, dataset));
   above.sort((a, b) => (b.y + b.h) - (a.y + a.h) || Math.abs(a.x + a.w / 2 - tile.x - tile.w / 2) - Math.abs(b.x + b.w / 2 - tile.x - tile.w / 2) || a.x - b.x);
   return above.length && filterMatchesChart(tile, above[0], dataset) ? [above[0].id] : [];
 }
@@ -29,12 +48,31 @@ export function nextFilterTitle(charts: Tile[]): string {
   const number = Math.max(filters.length, ...filters.map(chart => Number(chart.config.title?.match(/\s(\d+)$/)?.[1]) || 0)) + 1;
   return t('筛选器 {0}', number);
 }
+export function lastDateRange(end: string, count = 1, unit: ChartConfig['filterLastUnit'] = 'day'): [string, string] {
+  const finish = new Date(end + 'T00:00:00Z');
+  if (!Number.isFinite(finish.getTime())) return ['', ''];
+  const amount = Number.isFinite(count) ? Math.max(1, Math.min(10000, Math.trunc(count))) : 1;
+  const start = new Date(finish);
+  const months = unit === 'month' ? 1 : unit === 'quarter' ? 3 : unit === 'year' ? 12 : 0;
+  if (months) {
+    const day = start.getUTCDate();
+    start.setUTCDate(1);
+    start.setUTCMonth(start.getUTCMonth() - months * amount);
+    const last = new Date(start);
+    last.setUTCMonth(last.getUTCMonth() + 1, 0);
+    start.setUTCDate(Math.min(day, last.getUTCDate()) + 1);
+  } else start.setUTCDate(start.getUTCDate() - amount * (unit === 'week' ? 7 : 1) + 1);
+  return [start.getUTCFullYear() < 1 ? '0001-01-01' : start.toISOString().slice(0, 10), end];
+}
 export function controlFilters(tile: Tile, dataset?: Dataset): Filter[] {
   const c = tile.config;
   if (c.type !== 'filter' || !dataset) return [];
   const dimensions = new Set(dataset.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => field.name));
   const scope = { sourceId: tile.id, datasetId: tile.datasetId };
-  if (c.filterStyle === 'date-range') return c.dimension && dimensions.has(c.dimension) && c.filterRange?.every(Boolean) && c.filterRange[0] <= c.filterRange[1] ? [{ ...scope, field: c.dimension, op: 'date_between', value: c.filterRange }] : [];
+  if (c.filterStyle === 'date-range' || c.filterStyle === 'date-last') {
+    const range = c.filterStyle === 'date-last' ? lastDateRange(c.filterRange?.[1] || '', c.filterLastCount, c.filterLastUnit) : c.filterRange;
+    return c.dimension && dimensions.has(c.dimension) && range?.every(Boolean) && range[0] <= range[1] ? [{ ...scope, field: c.dimension, op: 'date_between', value: range }] : [];
+  }
   const fields = c.filterStyle === 'cascade' ? c.filterFields || [] : [c.dimension || ''];
   return fields.flatMap(field => dimensions.has(field) && c.filterValues?.[field]?.length ? [{ ...scope, field, op: 'in', value: c.filterValues[field] }] : []);
 }
@@ -76,7 +114,7 @@ export function moveGridTile(charts: Tile[], movingId: string, at: { x: number; 
   const w = Math.min(moving.w, columns);
   return pushGridTiles(charts, [{ ...moving, w, x: Math.max(0, Math.min(at.x, columns - w)), y: Math.max(0, at.y) }]);
 }
-function pushGridTiles(charts: Tile[], placed: Tile[]): Tile[] {
+export function pushGridTiles(charts: Tile[], placed: Tile[]): Tile[] {
   const pinned = new Set(placed.map(chart => chart.id));
   for (const chart of charts.filter(item => !pinned.has(item.id)).sort((a, b) => a.y - b.y || a.x - b.x)) {
     let next = chart;

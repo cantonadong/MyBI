@@ -1,6 +1,6 @@
 import { getChartLocale, translate } from '../i18n';
 import type { ChartConfig } from './registry';
-import { formatValue as valueString } from './registry';
+import { formatValue as valueString, chartLegend } from './registry';
 import { formatChartField as fieldValue, metricFormat, parseCategoryOrder, type FieldFormat } from '../fieldDisplay';
 import { chartColors } from './palettes';
 export type Row = Record<string, unknown>;
@@ -14,9 +14,10 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
   const groupName = (group: unknown) => formatField(group, c.fieldFormats?.[c.legendField || '']);
   const named = names.map((name, i) => ({ name, value: values[i] }));
   const colors = chartColors(c);
-  const base: any = { animation: false, color: colors, tooltip: { renderMode: 'richText', valueFormatter: (value: number) => formatValue(Number(value), c.format) }, legend: { show: c.legend, bottom: 0 } };
+  const base: any = { animation: false, color: colors, tooltip: { renderMode: 'richText', valueFormatter: (value: number) => formatValue(Number(value), c.format) }, legend: { show: chartLegend(c), bottom: 0 } };
   const cart: any = { grid: { left: 65, right: 30, top: 25, bottom: 55 }, xAxis: { type: 'category', data: names }, yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatValue(value, c.format) } } };
   const label = { show: c.labels };
+  if (c.type === 'candlestick') return { ...base, ...cart, yAxis: { ...cart.yAxis, scale: true }, series: [{ type: 'candlestick', name: c.title, data: rows.map(row => (c.measures || []).map(field => row[field] == null ? null : Number(row[field]))), itemStyle: { color: colors[0], color0: colors[1], borderColor: colors[0], borderColor0: colors[1] } }] };
   if (c.type === 'pie') return { ...base, series: [{ type: 'pie', radius: c.donut ? ['40%', '70%'] : '70%', data: named, label }] };
   if (c.type === 'gauge') return { ...base, series: [{ type: 'gauge', max: Math.max(100, ...values), data: [{ value: values[0] || 0, name: m }] }] };
   if (c.type === 'funnel') return { ...base, series: [{ type: 'funnel', data: named, label }] };
@@ -94,7 +95,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   }
   const categoryText = (value: unknown) => categoryLabels.get(String(value)) ?? categoryName(value);
   const originalHeatmapY = c.type === 'heatmap' ? [...new Set(rows.map(row => categoryName(row[c.secondDimension || ''])))] : undefined;
-  if (c.xAxisSort && c.xAxisSort !== 'none' && c.dimension && ['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap'].includes(c.type)) {
+  if (c.xAxisSort && c.xAxisSort !== 'none' && c.dimension && ['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'candlestick'].includes(c.type)) {
     const ranks = parseCategoryOrder(c.xAxisOrderText || '');
     const dimension = c.dimension;
     const rank = (value: unknown) => ranks.get(categoryText(value).trim()) ?? ranks.get(formatField(value, c.fieldFormats?.[dimension]).trim()) ?? ranks.size;
@@ -151,7 +152,8 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   if (option.visualMap && c.palette) option.visualMap.inRange = { color: ['#f1f5f9', chartColors(c)[0]] };
   if (option.visualMap) option.visualMap.formatter = (value: number) => metricValue(value, primary);
   if (c.type === 'histogram') option.xAxis.axisLabel = { formatter: (value: unknown) => String(value).includes('–') ? String(value).split('–').map(part => formatted(Number(part), primary)).join('–') : formatted(Number(value), primary) };
-  if (categoryAxis?.type === 'category') categoryAxis.axisLabel = { ...categoryAxis.axisLabel, interval: !c.axisLabelDensity || c.axisLabelDensity === 'auto' ? 'auto' : c.axisLabelDensity === 'all' ? 0 : Number(c.axisLabelDensity) };
+  if (categoryAxis?.type === 'category') categoryAxis.axisLabel = { ...categoryAxis.axisLabel, hideOverlap: !c.axisLabelDensity || c.axisLabelDensity === 'auto', rotate: c.axisLabelRotate && !c.horizontal ? 45 : 0, interval: !c.axisLabelDensity || c.axisLabelDensity === 'auto' ? 'auto' : c.axisLabelDensity === 'all' ? 0 : Number(c.axisLabelDensity) };
+  if (c.axisLabelRotate && option.grid) option.grid.bottom = Math.max(Number(option.grid.bottom) || 55, 95);
   if (c.highlightWeekends && option.xAxis?.type === 'category') {
     option.xAxis.splitArea = { show: true, interval: 0, areaStyle: { color: option.xAxis.data.map((value: unknown) => {
       if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value)) return 'transparent';
@@ -188,6 +190,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     const valueText = (value: any, label = false): string => {
       const metric = label ? labelValue : metricValue;
       if (c.type === 'histogram') return label ? labelValue(value, field) : formatField(value, { kind: 'integer', format: 'number', decimals: 0 });
+      if (c.type === 'candlestick' && Array.isArray(value)) return (c.measures || []).map((measure, index) => metric(value[value.length - 4 + index], measure)).join(', ');
       if (Array.isArray(value)) {
         if (c.type === 'heatmap') return metric(value[2], field);
         if (c.type === 'scatter') return label ? [labelValue(value[0], dimension), labelValue(value[1], field), ...(c.secondMeasure ? [labelValue(value[2], c.secondMeasure)] : [])].join(', ') : [formatted(value[0], dimension), formatted(value[1], field), ...(c.secondMeasure ? [formatted(value[2], c.secondMeasure)] : [])].join(', ');
@@ -197,6 +200,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       return metric(value, field);
     };
     series.tooltip = { ...series.tooltip, valueFormatter: (value: any) => valueText(value) };
+    if (c.type === 'candlestick') series.tooltip.formatter = (params: any) => category(params.name, dimension) + '\n' + ['开盘', '收盘', '最低', '最高'].map((label, index) => translate(locale, label) + ': ' + metricValue(params.data[index], c.measures?.[index] || primary)).join('\n');
     if (cartesian) series.tooltip.formatter = (params: any) => category(params.name, dimension) + '\n' + (seriesNames.get(params.seriesName) || params.seriesName) + ': ' + valueText(params.value);
     if (c.type === 'scatter') series.tooltip.formatter = (params: any) => [
       ...(c.legendField ? [seriesNames.get(params.seriesName) || params.seriesName] : []),
@@ -206,9 +210,10 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     ].join('\n');
     series.labelLayout = cartesian || c.type === 'scatter' ? layoutLabel : { ...series.labelLayout, moveOverlap: c.horizontal ? 'shiftX' : 'shiftY', hideOverlap };
     series.labelLine = { ...series.labelLine, show: true, lineStyle: { ...series.labelLine?.lineStyle, color: '#8790a4', width: 1 } };
-    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.labels, ...(series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
+    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.type === 'pie' && (c.piePercent ?? c.legendPercent) ? true : c.labels, ...(series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
       if ((cartesian || (c.labelDensity && c.labelDensity !== 'auto')) && (params.dimensionIndex ?? params.dataIndex) % stride !== 0) return '';
       if (['tree', 'treemap', 'sunburst'].includes(c.type)) return c.labels ? params.name + ': ' + valueText(params.value, true) : params.name;
+      if (c.type === 'pie' && (c.piePercent ?? c.legendPercent)) return `${valueText(params.value, true)} (${formatField(Number(params.percent || 0) / 100, { kind: 'decimal', format: 'percent', decimals: 1 })})`;
       return valueText(params.value, true);
     } };
     if (c.type === 'waterfall' && c.labels) {
@@ -245,9 +250,13 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       };
       const lanes: number[] = [];
       const spans = c.annotations.flatMap((item, index) => {
-        const start = item.start ? Date.parse(item.start) - 43200000 : minimum, end = item.end ? Date.parse(item.end) + 43200000 : maximum;
+        const single = item.start && item.start === item.end;
+        const start = item.start ? Date.parse(item.start) : minimum, end = c.annotationStyle === 'start' ? start : item.end ? Date.parse(item.end) : maximum;
         if (end < minimum || start > maximum) return [];
-        const from = positionAt(Math.max(minimum, start)), to = positionAt(Math.min(maximum, end));
+        const edge = single && c.annotationStyle !== 'start' ? 0 : .5 * (ascending ? 1 : -1);
+        const sharedStart = item.start && c.annotations!.some(other => other !== item && (c.annotationStyle === 'start' ? (!other.start || other.start <= item.start!) && (!other.end || other.end >= item.start!) : other.end === item.start));
+        const sharedEnd = item.end && c.annotations!.some(other => other !== item && other.start === item.end);
+        const from = positionAt(Math.max(minimum, start)) - (sharedStart ? 0 : edge), to = c.annotationStyle === 'start' ? from : positionAt(Math.min(maximum, end)) + (sharedEnd ? 0 : edge);
         return [{ ...item, startBoundary: start, endBoundary: end, from: Math.min(from, to), to: Math.max(from, to), color: chartColors(c)[index % chartColors(c).length], lane: 0 }];
       }).sort((a, b) => a.from - b.from || a.to - b.to);
       spans.forEach(span => {
@@ -265,9 +274,21 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
           data: spans.map(span => [span.from, span.to]), encode: { x: [0, 1], y: [], tooltip: [] },
           renderItem: (params: any, api: any) => {
             const span = spans[params.dataIndex], grid = params.coordSys;
+            const first = api.coord([0, 0])[0];
+            const step = dates.length > 1 ? api.coord([1, 0])[0] - first : grid.width;
+            const coordinate = (position: number) => Math.max(grid.x, Math.min(grid.x + grid.width, first + position * step));
+            if (c.annotationStyle === 'start' || span.start && span.start === span.end) {
+              const date = span.start ? Date.parse(span.start) : NaN;
+              if (!Number.isFinite(date) || date < minimum || date > maximum) return { type: 'group', children: [] };
+              const x = coordinate(c.annotationStyle === 'start' ? span.from : positionAt(date));
+              return { type: 'group', children: [
+                { type: 'line', shape: { x1: x, x2: x, y1: grid.y, y2: grid.y + grid.height }, style: { stroke: span.color, lineWidth: 1, lineDash: [4, 3] } },
+                ...(span.lane < visibleLanes ? [{ type: 'text', style: { x, y: 18 + span.lane * laneHeight, text: span.label, fill: span.color, fontSize: 12, align: 'center', verticalAlign: 'middle' } }] : []),
+              ] };
+            }
             const leftBound = ascending ? span.startBoundary : span.endBoundary, rightBound = ascending ? span.endBoundary : span.startBoundary;
-            const x = leftBound > minimum && leftBound < maximum ? api.coord([span.from, 0])[0] : grid.x;
-            const right = rightBound > minimum && rightBound < maximum ? Math.max(x + 2, api.coord([span.to, 0])[0]) : grid.x + grid.width;
+            const x = leftBound >= minimum && leftBound <= maximum ? coordinate(span.from) : grid.x;
+            const right = rightBound >= minimum && rightBound <= maximum ? coordinate(span.to) : grid.x + grid.width;
             const width = right - x, top = 8 + span.lane * laneHeight;
             const children: any[] = [{ type: 'rect', shape: { x, y: grid.y, width, height: grid.height }, style: { fill: span.color, opacity: .09 } }];
             if (span.lane < visibleLanes) children.push(

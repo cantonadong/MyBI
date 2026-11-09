@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { api, json } from './dashboard';
 import { getLocale, t } from './i18n';
 import { Icon } from './Icon';
+import { Pagination } from './Pagination';
 
 type Comment = { id: string; author: string; avatar: string; content: string; created_at: string; can_edit: boolean };
 export function CommentsPanel({ reportId, chartId, onClose, onCount }: { reportId: string; chartId: string; onClose: () => void; onCount: (count: number) => void }) {
   const [items, setItems] = useState<Comment[]>([]);
+  const [requestedPage, setPage] = useState(0);
+  const page = Math.min(requestedPage, Math.max(0, Math.ceil(items.length / 10) - 1));
   const [content, setContent] = useState('');
   const [editing, setEditing] = useState('');
   const [editContent, setEditContent] = useState('');
@@ -31,7 +34,7 @@ export function CommentsPanel({ reportId, chartId, onClose, onCount }: { reportI
       finally { setBusy(false); }
     }}><textarea aria-label={t('评论内容')} placeholder={t('写下评论…')} maxLength={5000} value={content} disabled={busy} onChange={event => setContent(event.target.value)} /><button className="primary" disabled={!reportId || busy || loading || !content.trim()}>{busy ? t('发送中…') : t('发表评论')}</button></form>
     {!reportId && <p>{t('请先保存报表再发表评论')}</p>}{error && <p role="alert">{error}</p>}
-    <div className={`comments-list ${scrolling ? 'is-scrolling' : ''}`} onScroll={() => { setScrolling(true); window.clearTimeout(scrollTimer.current); scrollTimer.current = window.setTimeout(() => setScrolling(false), 800); }}>{loading ? <p>{t('加载中…')}</p> : !items.length ? <p>{t('暂无评论')}</p> : items.map(item => <article key={item.id} className={`comment ${item.can_edit ? 'comment-own' : 'comment-other'}`}><div className="comment-author" title={item.author} aria-label={item.author}>{item.avatar ? <img src={item.avatar} alt={item.author} /> : <span className="comment-avatar">{item.author.slice(0, 1)}</span>}</div><div className={`comment-bubble ${item.can_edit ? 'own-comment' : ''}`} title={new Date(item.created_at).toLocaleString(getLocale())}>{editing === item.id ? <textarea autoFocus aria-label={t('\u4fee\u6539\u8bc4\u8bba')} maxLength={5000} value={editContent} disabled={busy} onChange={event => setEditContent(event.target.value)} onKeyDown={async event => {
+    <div className={`comments-list ${scrolling ? 'is-scrolling' : ''}`} onScroll={() => { setScrolling(true); window.clearTimeout(scrollTimer.current); scrollTimer.current = window.setTimeout(() => setScrolling(false), 800); }}>{loading ? <p>{t('加载中…')}</p> : !items.length ? <p>{t('暂无评论')}</p> : items.slice(page * 10, (page + 1) * 10).map(item => <article key={item.id} className={`comment ${item.can_edit ? 'comment-own' : 'comment-other'}`}><div className="comment-author" title={item.author} aria-label={item.author}>{item.avatar ? <img src={item.avatar} alt={item.author} /> : <span className="comment-avatar">{item.author.slice(0, 1)}</span>}</div><div className={`comment-bubble ${item.can_edit ? 'own-comment' : ''}`} title={new Date(item.created_at).toLocaleString(getLocale())}>{editing === item.id ? <textarea autoFocus aria-label={t('\u4fee\u6539\u8bc4\u8bba')} maxLength={5000} value={editContent} disabled={busy} onChange={event => setEditContent(event.target.value)} onKeyDown={async event => {
       if (event.key === 'Escape') { setEditing(''); return; }
       if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
       event.preventDefault();
@@ -46,6 +49,6 @@ export function CommentsPanel({ reportId, chartId, onClose, onCount }: { reportI
       try { await api(path + '/' + item.id, { method: 'DELETE' }); const remaining = items.filter(comment => comment.id !== item.id); setItems(remaining); onCount(remaining.length); }
       catch (error) { setError((error as Error).message); }
       finally { setBusy(false); }
-    }}>{t('\u5220\u9664')}</button></span>}</>}</div></article>)}</div>
+    }}>{t('\u5220\u9664')}</button></span>}</>}</div></article>)}</div><Pagination page={page} total={items.length} onChange={setPage} disabled={busy || loading} />
   </div>;
 }

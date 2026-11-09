@@ -25,7 +25,7 @@ from sqlalchemy import or_, select, update
 
 from .db import SessionLocal
 from .connections import resolve_connection
-from .imports.delimited import Field as Column, TabularPreview
+from .imports.delimited import Field as Column, TabularPreview, text_field
 from .models import Dataset, DatasetSnapshot, DynamicSource
 from .settings import settings
 from .storage import atomic_copy, atomic_json, dataset_dir, rollback_files
@@ -135,7 +135,7 @@ def cipher():
 
 def stored_config(request: SourceConfig, previous: dict | None = None):
     if request.connection_id:
-        config = request.model_dump(include={'connection_id', 'mode', 'sql', 'schema_name', 'object_name'})
+        config = request.model_dump(include={'connection_id', 'database', 'mode', 'sql', 'schema_name', 'object_name'})
         resolve_connection(config)
     else:
         config = request.model_dump(include={'connection_id', 'redshift', 'host', 'port', 'database', 'user', 'password', 'tls', 'trust_server_certificate', 'mode', 'sql', 'schema_name', 'object_name'})
@@ -149,7 +149,7 @@ def stored_config(request: SourceConfig, previous: dict | None = None):
         config['password'] = password
     if isinstance(request, SourceRequest) and any((request.overrides, request.renames, request.formats, request.field_order)):
         config['field_settings'] = request.model_dump(include={'overrides', 'renames', 'formats', 'field_order', 'confirm_conversion'})
-    elif previous and all(config.get(key) == previous.get(key) for key in ('connection_id', 'mode', 'sql', 'schema_name', 'object_name')) and previous.get('field_settings'):
+    elif previous and all(config.get(key) == previous.get(key) for key in ('connection_id', 'database', 'mode', 'sql', 'schema_name', 'object_name')) and previous.get('field_settings'):
         config['field_settings'] = previous['field_settings']
     if isinstance(request, SourceRequest) and request.annotation_fields is not None:
         config['annotation_fields'] = request.annotation_fields
@@ -267,7 +267,7 @@ def execute_query(config: dict):
                             raise HTTPException(413, '查询结果超过数据集大小限制，请缩小查询范围')
                         rows.append(list(row))
                     batch = cursor.fetchmany(1000)
-                fields = [Column(name, 'integer' if oid in {20, 21, 23} else 'number' if oid in {700, 701, 1700} else 'date' if oid in {1082, 1114, 1184} else 'string') for name, oid in zip(names, oids)]
+                fields = [Column(name, 'string' if text_field(name) else 'integer' if oid in {20, 21, 23} else 'number' if oid in {700, 701, 1700} else 'date' if oid in {1082, 1114, 1184} else 'string') for name, oid in zip(names, oids)]
                 for row in rows:
                     for index, value in enumerate(row):
                         if value is not None and fields[index].type == 'string' and not isinstance(value, str):
@@ -286,7 +286,7 @@ def fingerprint(config: dict):
 
 
 def preview_fingerprint(config: dict):
-    config = {key: value for key, value in resolve_connection(config).items() if key != 'field_settings'}
+    config = {key: value for key, value in resolve_connection(config).items() if key not in {'field_settings', 'annotation_fields'}}
     for key in (('schema_name', 'object_name') if config['mode'] == 'sql' else ('sql',)):
         config.pop(key, None)
     return fingerprint(config)
@@ -369,12 +369,14 @@ def save_cache(snapshot, config: dict, schedule: dict, duration: float, day: str
                                      'duration_seconds': duration, 'created_at': utc_now().isoformat()})
 
 
-def claim(dataset_id: str, due_only=False):
+def claim(dataset_id: str, due_only=False, scheduled_after=None):
     now = utc_now()
     token = str(uuid4())
     conditions = [DynamicSource.dataset_id == dataset_id, or_(DynamicSource.lease_until.is_(None), DynamicSource.lease_until <= now)]
     if due_only:
         conditions.append(DynamicSource.next_run_at <= now)
+    if scheduled_after is not None:
+        conditions.append(or_(DynamicSource.last_run_at.is_(None), DynamicSource.last_run_at < scheduled_after))
     with SessionLocal.begin() as session:
         result = session.execute(update(DynamicSource).where(*conditions).values(lease_token=token, lease_until=now + timedelta(seconds=settings.dynamic_timeout_seconds + 120)))
         if result.rowcount != 1:
@@ -387,15 +389,15 @@ def release(dataset_id: str, token: str, **values):
         session.execute(update(DynamicSource).where(DynamicSource.dataset_id == dataset_id, DynamicSource.lease_token == token).values(lease_token=None, lease_until=None, **values))
 
 
-def refresh(dataset_id: str, force=False, due_only=False):
+def refresh(dataset_id: str, force=False, due_only=False, scheduled_after=None):
     from .api.datasets import query_slots
     with query_slots:
-        return refresh_locked(dataset_id, force, due_only)
+        return refresh_locked(dataset_id, force, due_only, scheduled_after)
 
 
-def refresh_locked(dataset_id: str, force=False, due_only=False):
+def refresh_locked(dataset_id: str, force=False, due_only=False, scheduled_after=None):
     from .api.datasets import dataset_payload, get_pair, publish
-    token = claim(dataset_id, due_only)
+    token = claim(dataset_id, due_only, scheduled_after)
     with SessionLocal() as session:
         source = session.get(DynamicSource, dataset_id)
         config, schedule = source.config, source.schedule

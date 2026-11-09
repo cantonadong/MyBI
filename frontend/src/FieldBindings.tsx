@@ -57,16 +57,16 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
       </div>)}
     </section> : !['kpi', 'gauge', 'histogram'].includes(c.type) && select(c.type === 'sankey' ? t("来源节点") : hierarchy ? t("一级分类") : c.horizontal ? t("Y 轴") : t("X 轴"), c.dimension, dimension => onChange({ dimension }), dimensions)}
     {(c.type === 'heatmap' || c.type === 'sankey' || hierarchy) && select(c.type === 'heatmap' ? t("Y 轴") : c.type === 'sankey' ? t("目标节点") : t("下一级分类（可选）"), c.secondDimension, secondDimension => onChange({ secondDimension }), dimensions)}
-    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'histogram'].includes(c.type) && <label>{c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')}<select aria-label={c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')} value={c.axisLabelDensity || 'auto'} onChange={event => onChange({ axisLabelDensity: event.target.value as ChartConfig['axisLabelDensity'] })}>
+    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'histogram', 'candlestick'].includes(c.type) && <label>{c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')}<select aria-label={c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')} value={c.axisLabelDensity || 'auto'} onChange={event => onChange({ axisLabelDensity: event.target.value as ChartConfig['axisLabelDensity'] })}>
       <option value="auto">{t('自动')}</option><option value="all">{t('全部')}</option>{['1', '2', '3'].map(value => <option key={value} value={value}>{t('每隔 {0} 个', value)}</option>)}
     </select></label>}
-    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap'].includes(c.type) && <>
+    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'candlestick'].includes(c.type) && <>
       <label>{t('X 轴排序')}<select aria-label={t('X 轴排序')} value={c.xAxisSort || 'none'} onChange={event => onChange({ xAxisSort: event.target.value as ChartConfig['xAxisSort'] })}>
         <option value="none">{t('默认（数据顺序）')}</option><option value="asc">{t('升序')}</option><option value="desc">{t('降序')}</option><option value="custom">{t('自定义')}</option>
       </select></label>
       {c.xAxisSort === 'custom' && <label>{t('自定义类别顺序')}<textarea aria-label={t('自定义类别顺序')} rows={5} value={c.xAxisOrderText || ''} placeholder={t('粘贴类别名称，每行一个，或用逗号、Tab 分隔')} onChange={event => onChange({ xAxisOrderText: event.target.value })} /><small>{t('按文本顺序排列，未列出的类别保留原顺序放在末尾。')}</small></label>}
     </>}
-    {c.type === 'mixed' ? (['bar', 'line'] as const).map(type => <section className="mixed-metric-group" key={type}>
+    {c.type === 'candlestick' ? <>{['开盘', '收盘', '最低', '最高'].map((label, index) => <div key={label}>{select(t(label), c.measures?.[index], value => { const next = Array.from({ length: 4 }, (_, i) => i === index ? value : c.measures?.[i] || ''); onChange({ measures: next, measure: next[0], secondMeasure: undefined }); })}</div>)}</> : c.type === 'mixed' ? (['bar', 'line'] as const).map(type => <section className="mixed-metric-group" key={type}>
       <div className="binding-heading"><strong>{type === 'bar' ? t('柱状指标') : t('折线指标')}</strong><button className="binding-button" aria-label={type === 'bar' ? t('添加柱状指标') : t('添加折线指标')} title={type === 'bar' ? t('添加柱状指标') : t('添加折线指标')} disabled={!nextMetric || measures.length >= 32} onClick={() => {
         if (!nextMetric) return;
         const bar = mixedSeries.find(series => series.type === 'bar');
@@ -92,6 +92,8 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
       </div>{c.type === 'line' && <label className="mixed-metric-axis">{t('刻度')}<select aria-label={t('指标 {0} 刻度', index + 1)} disabled={!value} value={mixedSeries[index]?.axis || 'left'} onChange={event => updateAxis(index, event.target.value as 'left' | 'right')}><option value="left">{c.horizontal ? t('下轴') : t('左轴')}</option><option value="right">{c.horizontal ? t('上轴') : t('右轴')}</option></select></label>}</div>)}
       {(c.type === 'line' ? (['left', 'right'] as const).filter(side => mixedSeries.some(series => series.axis === side)) : ['left'] as const).map(axisRange)}
     </div> : <div className="metric-binding-row">{select(c.type === 'heatmap' ? t("颜色数值") : c.type === 'sankey' ? t("连接数值") : c.type === 'histogram' ? t("X 轴数值") : t("Y 轴"), c.measure, measure => onChange({ measure, measures: undefined }))}<button className="binding-button metric-remove" aria-label={t("删除指标 1")} title={t("移除此指标")} onClick={() => onChange({ measure: undefined, measures: undefined })}>×</button></div>}
+    {c.type !== 'candlestick' && measures.filter(Boolean).map(field => <label key={'aggregation-' + field}>{field} · {t('聚合')}<select value={c.metricAggregations?.[field] || c.aggregation || 'sum'} onChange={event => onChange({ metricAggregations: { ...c.metricAggregations, [field]: event.target.value as NonNullable<ChartConfig['aggregation']> } })}>{['sum', 'avg', 'count', 'min', 'max', 'count_distinct'].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}
+    {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'histogram', 'candlestick'].includes(c.type) && <label><input type="checkbox" checked={!!c.axisLabelRotate} onChange={event => onChange({ axisLabelRotate: event.target.checked })} />{t('X 轴标签倾斜 45°')}</label>}
     {c.type === 'scatter' && select(t("气泡大小（可选）"), c.secondMeasure, secondMeasure => onChange({ secondMeasure }))}
 
   </>;

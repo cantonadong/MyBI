@@ -1,8 +1,6 @@
-import ctypes
 import hashlib
 import json
 import os
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from cryptography.fernet import InvalidToken
@@ -12,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .db import SessionLocal
 from .models import Dataset, DynamicSource, SavedConnection
-from .settings import PROJECT_ROOT
+from .shared_data import synchronize_connections, publish_connection, read_config, read_passwords, scopes_for, metadata_identity, metadata_path, read_metadata, file_lock
 
 router = APIRouter(prefix='/api/connections')
 CONNECTION_FIELDS = {'host', 'port', 'database', 'user', 'redshift', 'tls', 'trust_server_certificate', 'password'}
@@ -64,11 +62,15 @@ def connection_config(body, previous=None):
 def resolve_connection(config):
     if not config.get('connection_id'):
         return config
+    synchronize_connections()
     with SessionLocal() as session:
         item = session.get(SavedConnection, config['connection_id'])
-        if not item:
+        if not item or item.config.get('shared_deleted'):
             raise HTTPException(422, '关联连接不存在，请在设置中重新配置')
-        return {**{key: value for key, value in config.items() if key != 'connection_id'}, **item.config}
+        result = {**{key: value for key, value in config.items() if key != 'connection_id'}, **item.config}
+        if config.get('database'):
+            result['database'] = config['database']
+        return result
 
 
 def migrate_connections():
@@ -108,12 +110,14 @@ def migrate_connections():
 
 @router.get('')
 def list_connections():
+    synchronize_connections()
     with SessionLocal() as session:
-        return [public_connection(item) for item in session.scalars(select(SavedConnection).order_by(SavedConnection.name))]
+        return [public_connection(item) for item in session.scalars(select(SavedConnection).order_by(SavedConnection.name)) if not item.config.get('shared_deleted')]
 
 
 @router.post('', status_code=201)
 def create_connection(body: ConnectionRequest):
+    synchronize_connections()
     try:
         with SessionLocal.begin() as session:
             if session.scalar(select(func.count()).select_from(SavedConnection)) >= 128:
@@ -121,30 +125,37 @@ def create_connection(body: ConnectionRequest):
             item = SavedConnection(name=body.name, config=connection_config(body))
             session.add(item)
             session.flush()
-            return public_connection(item)
+            result = public_connection(item)
+        publish_connection(item)
+        return result
     except IntegrityError:
         raise HTTPException(409, '连接名称已存在，请使用不同名称') from None
 
 
 @router.put('/{connection_id}')
 def save_connection(connection_id: str, body: ConnectionRequest):
+    synchronize_connections()
     try:
         with SessionLocal.begin() as session:
             item = session.get(SavedConnection, connection_id)
             if not item:
                 raise HTTPException(404, '连接不存在')
+            previous_name = item.name
             result = session.execute(update(SavedConnection).where(SavedConnection.id == connection_id, SavedConnection.version == body.version).values(
                 name=body.name, config=connection_config(body, item.config), version=body.version + 1))
             if result.rowcount != 1:
                 raise HTTPException(409, '连接已被修改，请重新选择后再试')
             session.refresh(item)
-            return public_connection(item)
+            payload = public_connection(item)
+        publish_connection(item, previous_name)
+        return payload
     except IntegrityError:
         raise HTTPException(409, '连接名称已存在，请使用不同名称') from None
 
 
 @router.delete('/{connection_id}', status_code=204)
 def delete_connection(connection_id: str):
+    synchronize_connections()
     with SessionLocal.begin() as session:
         item = session.get(SavedConnection, connection_id)
         if not item:
@@ -152,6 +163,7 @@ def delete_connection(connection_id: str):
         if any(source.config.get('connection_id') == connection_id for source in session.scalars(select(DynamicSource))):
             raise HTTPException(409, '连接仍被数据集引用，不能删除')
         session.delete(item)
+    publish_connection(item, delete=True)
 
 
 @router.post('/check')
@@ -169,29 +181,7 @@ def check_connection(body: ConnectionRequest):
 
 
 def myquery_passwords():
-    path = PROJECT_ROOT.parent / 'MyQuery' / 'passwords.dat'
-    if not path.is_file():
-        return {}
-    if path.stat().st_size > 1024 * 1024:
-        raise ValueError()
-    class Blob(ctypes.Structure):
-        _fields_ = [('size', ctypes.c_ulong), ('data', ctypes.POINTER(ctypes.c_ubyte))]
-    data = path.read_bytes()
-    buffer = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
-    source, target = Blob(len(data), buffer), Blob()
-    crypt = ctypes.WinDLL('crypt32', use_last_error=True)
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    crypt.CryptUnprotectData.argtypes = [ctypes.POINTER(Blob), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(Blob)]
-    crypt.CryptUnprotectData.restype = ctypes.c_int
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel.LocalFree.restype = ctypes.c_void_p
-    if not crypt.CryptUnprotectData(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(target)):
-        raise OSError(ctypes.get_last_error())
-    try:
-        return json.loads(ctypes.string_at(target.data, target.size).decode('utf-8'))
-    finally:
-        ctypes.memset(target.data, 0, target.size)
-        kernel.LocalFree(target.data)
+    return read_passwords()
 
 
 @router.post('/import-myquery')
@@ -222,30 +212,103 @@ def import_myquery(request: Request):
     return {'imported': imported}
 
 
+def load_object_catalog(connection_id: str, refresh: bool = False):
+    synchronize_connections()
+    with SessionLocal() as session:
+        item = session.get(SavedConnection, connection_id)
+        if not item or item.config.get('shared_deleted'):
+            raise HTTPException(404, '连接不存在')
+        scopes = scopes_for(item.name, item.config['database'])
+    objects = []
+    for scope in scopes:
+        config = resolve_connection({'connection_id': connection_id, 'database': scope['database']})
+        identity = metadata_identity(config, scope['schema'])
+        path = metadata_path(identity)
+        cached = read_metadata(identity) if not refresh else None
+        if refresh or cached is None:
+            with file_lock(path.with_suffix('.lock')):
+                try:
+                    cached = read_metadata(identity)
+                except (OSError, ValueError, HTTPException):
+                    if not refresh:
+                        raise
+                    cached = None
+                if refresh or cached is None:
+                    from .storage import atomic_json
+                    import time
+                    cached = read_object_catalog(connection_id, scope['database'], scope['schema']) | {
+                        'identity': identity, 'fetched': int(time.time()),
+                        'previous_fields': cached['fields'] if cached else None}
+                    atomic_json(path, cached)
+        objects.extend({**value, 'database_name': scope['database']} for value in cached['objects'])
+    return sorted(objects, key=lambda value: (value['database_name'], value['schema_name'], value['object_name']))
+
+
+@router.post('/{connection_id}/objects/refresh')
+def refresh_objects(connection_id: str):
+    return {'count': len(load_object_catalog(connection_id, refresh=True))}
+
+
+@router.post('/{connection_id}/objects/initialize')
+def initialize_objects(connection_id: str):
+    return {'count': len(load_object_catalog(connection_id))}
+
+
 @router.get('/{connection_id}/objects')
 def search_objects(connection_id: str, kind: str = Query(default='all', pattern='^(all|table|view|materialized_view)$'), search: str = Query(default='', max_length=255)):
+    search = search.strip().lower()
+    if not search:
+        return []
+    return [item for item in load_object_catalog(connection_id)
+            if (kind == 'all' or item['kind'] == kind)
+            and search in (item['database_name'] + '.' + item['schema_name'] + '.' + item['object_name']).lower()][:100]
+
+
+def read_object_catalog(connection_id: str, database: str, schema: str):
     from .api.datasets import query_slots
     from .dynamic import database_connection
-    with query_slots, database_connection({'connection_id': connection_id}) as (connection, _, redshift):
+    with query_slots, database_connection({'connection_id': connection_id, 'database': database}) as (connection, _, redshift):
         if redshift:
-            query = """SELECT schema_name, object_name, kind FROM (
-                SELECT t.table_schema AS schema_name, t.table_name AS object_name,
-                    CASE WHEN UPPER(t.table_type) = 'VIEW' THEN 'view' ELSE 'table' END AS kind
-                FROM svv_tables t WHERE table_catalog = current_database()
-                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
-                    AND NOT EXISTS (SELECT 1 FROM svv_mv_info m WHERE m.database_name = current_database() AND m.schema_name = t.table_schema AND m.name = t.table_name)
-                UNION ALL SELECT schema_name, name, 'materialized_view' FROM svv_mv_info WHERE database_name = current_database()
-            ) objects WHERE (%s = 'all' OR kind = %s) AND strpos(lower(schema_name || '.' || object_name), lower(%s)) > 0
-            ORDER BY schema_name, object_name LIMIT 100"""
+            parameters = (database, schema)
+            with connection.cursor() as cursor:
+                cursor.execute("""SELECT table_schema, table_name, table_type FROM svv_tables
+                    WHERE table_catalog = %s AND table_schema = %s""", parameters)
+                objects = {(schema, name): {'schema_name': schema, 'object_name': name,
+                    'kind': 'view' if object_type.upper() == 'VIEW' else 'table'}
+                    for schema, name, object_type in cursor.fetchall()}
+                cursor.execute('SELECT schema_name, name FROM svv_mv_info WHERE database_name = %s AND schema_name = %s', parameters)
+                for schema, name in cursor.fetchall():
+                    schema, name = schema.rstrip(), name.rstrip()
+                    objects[schema, name] = {'schema_name': schema, 'object_name': name, 'kind': 'materialized_view'}
+                cursor.execute("""SELECT table_name, column_name,
+                    CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar', 'character', 'char', 'nchar', 'bpchar') AND character_maximum_length IS NOT NULL
+                        THEN CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar') THEN 'varchar' ELSE 'char' END || '(' || CAST(character_maximum_length AS VARCHAR(20)) || ')'
+                        WHEN LOWER(data_type) IN ('numeric', 'decimal') AND numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL
+                        THEN data_type || '(' || CAST(numeric_precision AS VARCHAR(20)) || ',' || CAST(numeric_scale AS VARCHAR(20)) || ')' ELSE data_type END,
+                    is_nullable, column_default,
+                    CASE LOWER(data_type) WHEN 'smallint' THEN 2 WHEN 'int2' THEN 2 WHEN 'integer' THEN 4 WHEN 'int' THEN 4 WHEN 'int4' THEN 4
+                        WHEN 'bigint' THEN 8 WHEN 'int8' THEN 8 WHEN 'real' THEN 4 WHEN 'float4' THEN 4 WHEN 'double precision' THEN 8 WHEN 'float8' THEN 8
+                        WHEN 'float' THEN 8 WHEN 'boolean' THEN 1 WHEN 'bool' THEN 1 WHEN 'date' THEN 4 WHEN 'time' THEN 8 WHEN 'time without time zone' THEN 8
+                        WHEN 'timetz' THEN 8 WHEN 'time with time zone' THEN 8 ELSE NULL END
+                    FROM svv_all_columns WHERE database_name = %s AND schema_name = %s ORDER BY table_name, ordinal_position""", parameters)
+                fields = [[str(value) if value is not None else None for value in row] for row in cursor.fetchall()]
+            return {'objects': [value for _, value in sorted(objects.items())], 'fields': fields}
         else:
             query = """SELECT schema_name, object_name, kind FROM (
                 SELECT n.nspname AS schema_name, c.relname AS object_name,
                     CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view' ELSE 'table' END AS kind
                 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-                    AND n.nspname NOT LIKE 'pg_toast%%' AND has_table_privilege(c.oid, 'SELECT')
-            ) objects WHERE (%s = 'all' OR kind = %s) AND strpos(lower(schema_name || '.' || object_name), lower(%s)) > 0
-            ORDER BY schema_name, object_name LIMIT 100"""
+                WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm') AND n.nspname = %s
+            ) objects ORDER BY schema_name, object_name"""
         with connection.cursor() as cursor:
-            cursor.execute(query, (kind, kind, search.strip()))
-            return [{'schema_name': row[0].rstrip() if redshift else row[0], 'object_name': row[1].rstrip() if redshift else row[1], 'kind': row[2]} for row in cursor.fetchall()]
+            cursor.execute(query, (schema,))
+            objects = [{'schema_name': row[0], 'object_name': row[1], 'kind': row[2]} for row in cursor.fetchall()]
+            cursor.execute("""SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod),
+                CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_catalog.pg_get_expr(d.adbin,d.adrelid), t.typlen
+                FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+                JOIN pg_catalog.pg_class c ON c.oid=a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                WHERE n.nspname=%s AND c.relkind IN ('r','p','f','v','m') AND a.attnum>0 AND NOT a.attisdropped
+                ORDER BY c.relname,a.attnum""", (schema,))
+            fields = [[str(value) if value is not None else None for value in row] for row in cursor.fetchall()]
+            return {'objects': objects, 'fields': fields}

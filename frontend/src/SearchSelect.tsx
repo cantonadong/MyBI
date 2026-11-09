@@ -16,6 +16,9 @@ export function SearchSelect({ value, options, onChange, label, placeholder, dis
   const selected = options.find(option => option.value === value);
   const visible = onSearch ? options : options.filter(option => `${option.label} ${option.search || ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   useEffect(() => { list.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' }); }, [active]);
+  useEffect(() => {
+    if (open && !query) list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [open, query]);
   function choose(option: SearchOption) { onChange(option.value); setOpen(false); setQuery(''); }
   return <div className="search-select">
     <input role="combobox" aria-label={label} aria-autocomplete="list" aria-expanded={open} aria-controls={id}
