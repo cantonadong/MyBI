@@ -1,11 +1,15 @@
+import { Pagination } from './Pagination';
 import { useEffect, useState } from 'react';
 import { api, Dataset, json } from './dashboard';
 import { t } from './i18n';
 
 export function ValueLabelsEditor({ dataset, field, names, busy, onChange }: { dataset: Dataset; field: string; names: Record<string, string>; busy: boolean; onChange: (names: Record<string, string>) => void }) {
+  const [requestedPage, setPage] = useState(0);
   const [groups, setGroups] = useState<unknown[]>([]);
   const [loading, setLoading] = useState(false), [error, setError] = useState('');
+  const page = Math.min(requestedPage, Math.max(0, Math.ceil(groups.length / 10) - 1));
   useEffect(() => {
+    setPage(0);
     let active = true;
     setLoading(true); setError(''); setGroups([]);
     const load = async () => {
@@ -24,7 +28,7 @@ export function ValueLabelsEditor({ dataset, field, names, busy, onChange }: { d
   return <section className="value-labels-editor"><header><h3>{t('值与显示名称')} · {field}</h3></header>
     {loading && <p>{t('加载中…')}</p>}{error && <p role="alert">{error}</p>}
     <div className="value-labels-list">
-    {groups.map(group => {
+    {groups.slice(page * 10, (page + 1) * 10).map(group => {
       const key = JSON.stringify(group);
       const original = group == null ? 'NULL' : String(group);
       return <label key={key}><span title={original}>{original}</span><input disabled={busy} aria-label={t('{0} 的显示名称', original)} placeholder={original} value={names[key] || ''} onChange={event => {
@@ -33,6 +37,6 @@ export function ValueLabelsEditor({ dataset, field, names, busy, onChange }: { d
         onChange(next);
       }} /></label>;
     })}
-    </div>
+    </div><Pagination page={page} total={groups.length} onChange={setPage} disabled={busy || loading} />
   </section>;
 }

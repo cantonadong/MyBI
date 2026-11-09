@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update, func, delete
 from datetime import datetime, timezone
 from getpass import getuser
@@ -16,6 +16,14 @@ class SaveDashboard(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     document: dict
     version: int = 1
+
+    @field_validator('document')
+    @classmethod
+    def validate_schedule(cls, document):
+        if 'refreshSchedule' in document:
+            from ..dynamic import Schedule
+            document['refreshSchedule'] = Schedule.model_validate(document['refreshSchedule']).model_dump()
+        return document
 
 
 class PublishDashboard(BaseModel):

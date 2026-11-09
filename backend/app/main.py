@@ -19,11 +19,13 @@ import secrets
 from .api.sources import router as sources_router
 from .storage import materialize_existing
 from .connections import router as connections_router, migrate_connections
+from .shared_data import synchronize_connections
 
 
 @asynccontextmanager
 async def lifespan(app):
     migrate_connections()
+    synchronize_connections()
     materialize_existing()
     stop = Event()
     worker = None

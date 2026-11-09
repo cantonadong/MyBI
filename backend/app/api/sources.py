@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 
 from ..db import SessionLocal
 from ..connections import resolve_connection
+from ..shared_data import config_path
 from ..dynamic import SourceConfig, SourceRequest, cache_day, claim, configured_preview, discard_source_preview, execute, next_run, read_source_preview, refresh, release, safe_config, save_cache, stage_source_preview, stored_config, utc_now
 from ..models import Dataset, DynamicSource
 from ..storage import dataset_dir, write_dataset, rollback_files
@@ -36,7 +37,7 @@ def myquery_connections(request: Request):
         raise HTTPException(403, '仅本机可读取 MyQuery 连接配置')
     if os.name != 'nt' or not os.getenv('APPDATA'):
         return []
-    path = Path(os.environ['APPDATA']) / 'SqlDesk' / 'connections.json'
+    path = config_path()
     try:
         if not path.is_file():
             return []

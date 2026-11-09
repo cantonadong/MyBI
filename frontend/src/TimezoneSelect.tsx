@@ -26,7 +26,7 @@ export function TimezoneSelect({ value, onChange, disabled }: { value: string; o
       const match = offset.match(/GMT([+-])(\d{2}):(\d{2})/);
       const minutes = match ? (Number(match[2]) * 60 + Number(match[3])) * (match[1] === '-' ? -1 : 1) : 0;
       const utc = match ? offset.replace('GMT', 'UTC') : 'UTC+00:00';
-      const city = cities[zone] ? t(cities[zone]) : zone.split('/').slice(1).join(' / ').replaceAll('_', ' ') || t('协调世界时');
+      const city = cities[zone] ? translate('en', cities[zone]) : zone.split('/').slice(1).join(' / ').replaceAll('_', ' ') || translate('en', '协调世界时');
       const shortOffset = match ? `UTC${match[1]}${Number(match[2])}${Number(match[3]) ? ':' + match[3] : ''}` : 'UTC+0';
       return { value: zone, label: `${utc} · ${city}`, search: `${zone} ${offset} ${utc} ${shortOffset} ${city} ${cities[zone] || ''} ${translate('en', cities[zone] || '')}`, minutes };
     }).sort((a, b) => a.minutes - b.minutes || a.label.localeCompare(b.label, locale));

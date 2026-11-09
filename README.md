@@ -1,4 +1,4 @@
-# MyBI v1.1
+# MyBI v1.2
 
 A local visual report builder for Windows, with Simplified Chinese and English UI.
 
@@ -8,8 +8,8 @@ Two packages are available for Windows 10/11 x64. Both include the Rust + Slint 
 
 | Package | Runtime dependencies |
 | --- | --- |
-| `MyBI-v1.1-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
-| `MyBI-v1.1-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
+| `MyBI-v1.2-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
+| `MyBI-v1.2-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
 
 ```powershell
 py -3.13 -m venv .venv
@@ -19,7 +19,7 @@ py -3.13 -m venv .venv
 
 Then double-click `MyBI.exe`. Backend dependencies and minimum versions are declared in `backend/pyproject.toml`: FastAPI, Uvicorn, DuckDB, PyArrow, python-calamine, python-multipart, SQLAlchemy, Alembic, and psycopg. pip installs their transitive dependencies automatically. Node.js is only needed when building the frontend from source, not for either release package.
 
-A normal desktop window with a MyBI taskbar icon shows the local service status. The service starts automatically; use the buttons to start or stop it, or open http://127.0.0.1:8000 in your browser. Minimize the window to keep it on the taskbar. Closing the window leaves the service running; reopen MyBI to manage it. Opening MyBI again restores and activates its existing manager window rather than displaying a duplicate-instance dialog. An existing healthy service from the same application folder is reused.
+MyBI starts the local service automatically and stays in the Windows notification area. Use its tray menu to restart or stop the service, open http://127.0.0.1:8000, or exit. Opening MyBI again reuses the existing instance. An existing healthy service from the same application folder is reused.
 
 The manager uses the shared Chinese/English dictionary. Its initial language follows Windows; opening MyBI in a browser synchronizes the browser's resolved language, including changes made in Settings. No system service or automatic startup entry is installed.
 
@@ -28,7 +28,8 @@ Reports and profile settings are stored in `data-workbench.db`; imported data sn
 ## Features
 
 - Paste tables or import CSV, XLS and XLSX files; configure field types, display names, dates, percentages and numeric precision.
-- Build charts, tables and canvas filters with drag-and-resize layout, labels, series grouping and dual axes.
+- Build charts, candlesticks, tables and canvas filters with automatic layout adjustment, labels, series grouping and dual axes. Configure independent metric aggregations, automatic titles and legends, and optional canvas guides.
+- Use date ranges or rolling Last X day/week/month/quarter/year filters; discard fields during import or dataset editing. Configure Annotation roles and column order in field settings.
 - Save, copy and publish reports; published reports are served by the same local service.
 - Browse datasets referenced by saved reports, manage comments, and highlight weekends.
 - Change language, chart palette and display defaults in Settings.
@@ -41,7 +42,7 @@ Use **Connect data** in the report editor or Dataset management. File/clipboard 
 
 **Validate query** runs the query and checks the connection, SQL/object, unique columns and non-empty result. It shows sample rows, row count and server query/result-fetch duration in the largest applicable unit. Saving a new source queries again to persist a fresh complete result. Validation results are previews, not saved datasets.
 
-Dataset management lets you edit sources and daily schedules (time and IANA timezone), read today's cache, force refresh and manage cache files. Save source changes before refreshing. Each daily schedule queries the source even if today's cache already exists. A missed daily run is executed once after the service resumes, then the next daily run is scheduled. Failed runs retain the previous successful dataset and report snapshots and expose the last error. Local schedules require the service to remain running, but not the browser or manager window.
+Dataset management lets you edit sources, read today's cache, force refresh and manage cache files. Set a daily query time and IANA timezone once in the report's overall properties to refresh its connected dynamic datasets. Save the report to apply its schedule. Shared datasets already refreshed after a scheduled time are not queried again for that occurrence. Failed runs retain the previous successful snapshot and expose the last error. Scheduling requires the service to remain running, but not the browser.
 
 Files are managed beside `MyBI.exe` by default:
 
@@ -59,7 +60,7 @@ Connection passwords are encrypted in the metadata database and excluded from ma
 
 ## Server deployment
 
-When a published report is opened, dynamic datasets resolve their most recent successful snapshot. Static datasets keep their published snapshots. Refreshing the browser picks up successful scheduled or manual updates; an already-open report does not repeatedly query its database.
+When a published report is opened, dynamic datasets resolve their most recent successful snapshot. Static datasets keep their published snapshots. An open report checks dynamic dataset metadata every 15 seconds and reloads chart data and automatic date bounds after a successful refresh; it does not repeatedly run source database queries.
 
 The existing Docker Compose stack runs PostgreSQL metadata storage, the API, a separate scheduler and the web proxy. Queries and schedules execute on the server, not in a user's browser. Set these environment variables in an untracked `.env` before `docker compose up -d --build`:
 
@@ -86,4 +87,4 @@ The manager starts Python directly and keeps stdout/stderr in `data/logs`, witho
 
 After pulling updates on another computer, rerun `npm.cmd --prefix frontend ci` and `./scripts/build.ps1` to refresh both the web build and `MyBI.exe`. Commit `frontend/package-lock.json` and `desktop/Cargo.lock` with dependency changes. Generated executables, `frontend/dist`, runtimes, databases and imported snapshots are local files and are not synchronized by Git.
 
-Tests are not run by the build script. v1.1 was built and packaged without running the test suite.
+Tests are not run by the build script. v1.2 was built and packaged without running the test suite.

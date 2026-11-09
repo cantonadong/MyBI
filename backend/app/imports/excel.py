@@ -40,7 +40,7 @@ def read_workbook(content: bytes, suffix: str, sheet_name: str | None, preview: 
     rows = [[_value(value) if isinstance(value, str) else value for value in row] for row in raw_rows]
     fields = []
     for index, header in enumerate(headers):
-        kind = infer_type(rows[0][index], raw_rows[0][index])
+        kind = infer_type(rows[0][index], raw_rows[0][index], header)
         fields.append(Field(header, kind))
         if kind == 'string':
             for row_index, row in enumerate(rows):

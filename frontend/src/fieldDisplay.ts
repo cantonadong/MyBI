@@ -10,8 +10,8 @@ export function parseCategoryOrder(text: string): Map<string, number> {
   return new Map(names.map((name, index) => [name, index]));
 }
 
-export function metricFormat(config: { type?: string; aggregation?: string; fieldFormats?: FieldFormats }, field: string): FieldFormat | undefined {
-  if (['count', 'count_distinct'].includes(config.aggregation || '') && !['table', 'scatter', 'boxplot', 'histogram'].includes(config.type || '')) return { kind: 'integer', format: 'number', decimals: 0 };
+export function metricFormat(config: { type?: string; aggregation?: string; metricAggregations?: Record<string, string>; fieldFormats?: FieldFormats }, field: string): FieldFormat | undefined {
+  if (['count', 'count_distinct'].includes(config.metricAggregations?.[field] || config.aggregation || '') && !['table', 'scatter', 'boxplot', 'histogram', 'candlestick'].includes(config.type || '')) return { kind: 'integer', format: 'number', decimals: 0 };
   return config.fieldFormats?.[field];
 }
 

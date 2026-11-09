@@ -89,18 +89,14 @@ impl Tray {
                 MF_ENABLED
             };
             let language = locale(&tray.root);
-            let status = wide(&format!(
-                "{}: {}",
-                translate(&tray.dictionary, &language, "运行状态"),
-                translate(
-                    &tray.dictionary,
-                    &language,
-                    tray.state
-                        .error
-                        .as_ref()
-                        .map(|error| error.key)
-                        .unwrap_or(tray.state.phase)
-                )
+            let status = wide(&translate(
+                &tray.dictionary,
+                &language,
+                tray.state
+                    .error
+                    .as_ref()
+                    .map(|error| error.key)
+                    .unwrap_or(tray.state.phase),
             ));
             AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, status.as_ptr());
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
