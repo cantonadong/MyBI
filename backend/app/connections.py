@@ -10,7 +10,8 @@ from sqlalchemy.exc import IntegrityError
 
 from .db import SessionLocal
 from .models import Dataset, DynamicSource, SavedConnection
-from .shared_data import synchronize_connections, publish_connection, read_config, read_passwords, scopes_for, metadata_identity, metadata_path, read_metadata, file_lock
+from .shared_data import synchronize_connections, publish_connection, read_config, read_passwords, scopes_for, metadata_identity, metadata_path, read_metadata, file_lock, config_path
+from .storage import atomic_json
 
 router = APIRouter(prefix='/api/connections')
 CONNECTION_FIELDS = {'host', 'port', 'database', 'user', 'redshift', 'tls', 'trust_server_certificate', 'password'}
@@ -111,8 +112,28 @@ def migrate_connections():
 @router.get('')
 def list_connections():
     synchronize_connections()
+    ranks = {profile.get('shared_id'): index for index, profile in enumerate(read_config().get('profiles', []))}
     with SessionLocal() as session:
-        return [public_connection(item) for item in session.scalars(select(SavedConnection).order_by(SavedConnection.name)) if not item.config.get('shared_deleted')]
+        items = [public_connection(item) for item in session.scalars(select(SavedConnection).order_by(SavedConnection.name)) if not item.config.get('shared_deleted')]
+        return sorted(items, key=lambda item: ranks.get(item['id'], len(ranks)))
+
+
+class ConnectionOrder(BaseModel):
+    ids: list[str] = Field(max_length=128)
+
+
+@router.put('/order')
+def order_connections(body: ConnectionOrder):
+    synchronize_connections()
+    path = config_path()
+    with file_lock(path.with_suffix('.lock')):
+        content = read_config()
+        profiles = {profile['shared_id']: profile for profile in content.get('profiles', [])}
+        if len(body.ids) != len(set(body.ids)) or set(body.ids) != set(profiles):
+            raise HTTPException(409, '连接列表已变化，请刷新后重试')
+        content['profiles'] = [profiles[identity] for identity in body.ids]
+        atomic_json(path, content)
+    return list_connections()
 
 
 @router.post('', status_code=201)
@@ -169,14 +190,12 @@ def delete_connection(connection_id: str):
 @router.post('/check')
 def check_connection(body: ConnectionRequest):
     from .api.datasets import query_slots
-    from .dynamic import database_connection
+    from .query_core import query_rows
     with SessionLocal() as session:
         saved = session.get(SavedConnection, body.id) if body.id else None
         config = connection_config(body, saved.config if saved else None)
-    with query_slots, database_connection(config) as (connection, _, _):
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT 1')
-            cursor.fetchone()
+    with query_slots:
+        query_rows(config, 'SELECT 1')
     return {'connected': True}
 
 
@@ -266,32 +285,32 @@ def search_objects(connection_id: str, kind: str = Query(default='all', pattern=
 
 def read_object_catalog(connection_id: str, database: str, schema: str):
     from .api.datasets import query_slots
-    from .dynamic import database_connection
-    with query_slots, database_connection({'connection_id': connection_id, 'database': database}) as (connection, _, redshift):
-        if redshift:
+    from .query_core import query_rows
+    config = resolve_connection({'connection_id': connection_id, 'database': database})
+    with query_slots:
+        if config.get('redshift'):
             parameters = (database, schema)
-            with connection.cursor() as cursor:
-                cursor.execute("""SELECT table_schema, table_name, table_type FROM svv_tables
-                    WHERE table_catalog = %s AND table_schema = %s""", parameters)
-                objects = {(schema, name): {'schema_name': schema, 'object_name': name,
-                    'kind': 'view' if object_type.upper() == 'VIEW' else 'table'}
-                    for schema, name, object_type in cursor.fetchall()}
-                cursor.execute('SELECT schema_name, name FROM svv_mv_info WHERE database_name = %s AND schema_name = %s', parameters)
-                for schema, name in cursor.fetchall():
-                    schema, name = schema.rstrip(), name.rstrip()
-                    objects[schema, name] = {'schema_name': schema, 'object_name': name, 'kind': 'materialized_view'}
-                cursor.execute("""SELECT table_name, column_name,
-                    CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar', 'character', 'char', 'nchar', 'bpchar') AND character_maximum_length IS NOT NULL
-                        THEN CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar') THEN 'varchar' ELSE 'char' END || '(' || CAST(character_maximum_length AS VARCHAR(20)) || ')'
-                        WHEN LOWER(data_type) IN ('numeric', 'decimal') AND numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL
-                        THEN data_type || '(' || CAST(numeric_precision AS VARCHAR(20)) || ',' || CAST(numeric_scale AS VARCHAR(20)) || ')' ELSE data_type END,
-                    is_nullable, column_default,
-                    CASE LOWER(data_type) WHEN 'smallint' THEN 2 WHEN 'int2' THEN 2 WHEN 'integer' THEN 4 WHEN 'int' THEN 4 WHEN 'int4' THEN 4
-                        WHEN 'bigint' THEN 8 WHEN 'int8' THEN 8 WHEN 'real' THEN 4 WHEN 'float4' THEN 4 WHEN 'double precision' THEN 8 WHEN 'float8' THEN 8
-                        WHEN 'float' THEN 8 WHEN 'boolean' THEN 1 WHEN 'bool' THEN 1 WHEN 'date' THEN 4 WHEN 'time' THEN 8 WHEN 'time without time zone' THEN 8
-                        WHEN 'timetz' THEN 8 WHEN 'time with time zone' THEN 8 ELSE NULL END
-                    FROM svv_all_columns WHERE database_name = %s AND schema_name = %s ORDER BY table_name, ordinal_position""", parameters)
-                fields = [[str(value) if value is not None else None for value in row] for row in cursor.fetchall()]
+            rows = query_rows(config, """SELECT table_schema, table_name, table_type FROM svv_tables
+                WHERE table_catalog = %s AND table_schema = %s""", parameters)
+            objects = {(schema, name): {'schema_name': schema, 'object_name': name,
+                'kind': 'view' if object_type.upper() == 'VIEW' else 'table'}
+                for schema, name, object_type in rows}
+            rows = query_rows(config, 'SELECT schema_name, name FROM svv_mv_info WHERE database_name = %s AND schema_name = %s', parameters)
+            for schema, name in rows:
+                schema, name = schema.rstrip(), name.rstrip()
+                objects[schema, name] = {'schema_name': schema, 'object_name': name, 'kind': 'materialized_view'}
+            rows = query_rows(config, """SELECT table_name, column_name,
+                CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar', 'character', 'char', 'nchar', 'bpchar') AND character_maximum_length IS NOT NULL
+                    THEN CASE WHEN LOWER(data_type) IN ('character varying', 'varchar', 'nvarchar') THEN 'varchar' ELSE 'char' END || '(' || CAST(character_maximum_length AS VARCHAR(20)) || ')'
+                    WHEN LOWER(data_type) IN ('numeric', 'decimal') AND numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL
+                    THEN data_type || '(' || CAST(numeric_precision AS VARCHAR(20)) || ',' || CAST(numeric_scale AS VARCHAR(20)) || ')' ELSE data_type END,
+                is_nullable, column_default,
+                CASE LOWER(data_type) WHEN 'smallint' THEN 2 WHEN 'int2' THEN 2 WHEN 'integer' THEN 4 WHEN 'int' THEN 4 WHEN 'int4' THEN 4
+                    WHEN 'bigint' THEN 8 WHEN 'int8' THEN 8 WHEN 'real' THEN 4 WHEN 'float4' THEN 4 WHEN 'double precision' THEN 8 WHEN 'float8' THEN 8
+                    WHEN 'float' THEN 8 WHEN 'boolean' THEN 1 WHEN 'bool' THEN 1 WHEN 'date' THEN 4 WHEN 'time' THEN 8 WHEN 'time without time zone' THEN 8
+                    WHEN 'timetz' THEN 8 WHEN 'time with time zone' THEN 8 ELSE NULL END
+                FROM svv_all_columns WHERE database_name = %s AND schema_name = %s ORDER BY table_name, ordinal_position""", parameters)
+            fields = [[str(value) if value is not None else None for value in row] for row in rows]
             return {'objects': [value for _, value in sorted(objects.items())], 'fields': fields}
         else:
             query = """SELECT schema_name, object_name, kind FROM (
@@ -300,15 +319,14 @@ def read_object_catalog(connection_id: str, database: str, schema: str):
                 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                 WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm') AND n.nspname = %s
             ) objects ORDER BY schema_name, object_name"""
-        with connection.cursor() as cursor:
-            cursor.execute(query, (schema,))
-            objects = [{'schema_name': row[0], 'object_name': row[1], 'kind': row[2]} for row in cursor.fetchall()]
-            cursor.execute("""SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod),
-                CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_catalog.pg_get_expr(d.adbin,d.adrelid), t.typlen
-                FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
-                JOIN pg_catalog.pg_class c ON c.oid=a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-                LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
-                WHERE n.nspname=%s AND c.relkind IN ('r','p','f','v','m') AND a.attnum>0 AND NOT a.attisdropped
-                ORDER BY c.relname,a.attnum""", (schema,))
-            fields = [[str(value) if value is not None else None for value in row] for row in cursor.fetchall()]
-            return {'objects': objects, 'fields': fields}
+        rows = query_rows(config, query, (schema,))
+        objects = [{'schema_name': row[0], 'object_name': row[1], 'kind': row[2]} for row in rows]
+        rows = query_rows(config, """SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod),
+            CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_catalog.pg_get_expr(d.adbin,d.adrelid), t.typlen
+            FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+            JOIN pg_catalog.pg_class c ON c.oid=a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+            WHERE n.nspname=%s AND c.relkind IN ('r','p','f','v','m') AND a.attnum>0 AND NOT a.attisdropped
+            ORDER BY c.relname,a.attnum""", (schema,))
+        fields = [[str(value) if value is not None else None for value in row] for row in rows]
+        return {'objects': objects, 'fields': fields}

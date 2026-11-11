@@ -3,7 +3,7 @@ import posixpath
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 from python_calamine import CalamineWorkbook
-from .delimited import Field, TabularPreview, infer_type, _value
+from .delimited import Field, TabularPreview, default_dimension, infer_type, _value
 
 def read_workbook(content: bytes, suffix: str, sheet_name: str | None, preview: bool, has_header: bool = True):
     with CalamineWorkbook.from_filelike(BytesIO(content)) as workbook:
@@ -45,4 +45,4 @@ def read_workbook(content: bytes, suffix: str, sheet_name: str | None, preview: 
         if kind == 'string':
             for row_index, row in enumerate(rows):
                 if row[index] is not None: row[index] = str(raw_rows[row_index][index])
-    return TabularPreview(headers, rows, fields, raw_rows)
+    return default_dimension(TabularPreview(headers, rows, fields, raw_rows))

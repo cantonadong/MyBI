@@ -18,6 +18,15 @@ export function ConnectionsSettings({ onMessage }: { onMessage: (text: string) =
   }, []);
   const change = (patch: Partial<Connection>) => { setForm(value => ({ ...value, ...patch })); setError(''); };
   const ready = !!(form.name.trim() && form.host.trim() && form.database.trim() && form.user.trim() && Number.isInteger(form.port) && form.port > 0 && form.port <= 65535);
+  const selectedIndex = connections.findIndex(value => value.id === form.id);
+  const reorder = async (offset: number) => {
+    const next = [...connections];
+    [next[selectedIndex], next[selectedIndex + offset]] = [next[selectedIndex + offset], next[selectedIndex]];
+    setBusy(true); setError('');
+    try { setConnections(await api('/connections/order', { ...json({ ids: next.map(value => value.id) }), method: 'PUT' })); onMessage(t('连接顺序已保存')); }
+    catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  };
   const run = async (action: 'save' | 'check' | 'delete') => {
     if (action === 'delete' && !window.confirm(t('确定删除连接“{0}”？', form.name))) return;
     setBusy(true); setError('');
@@ -29,15 +38,16 @@ export function ConnectionsSettings({ onMessage }: { onMessage: (text: string) =
         setConnections(previous => previous.filter(value => value.id !== form.id)); setForm(initial()); onMessage(t('连接已删除'));
       } else {
         const value = await api(form.id ? `/connections/${form.id}` : '/connections', { ...json(form), method: form.id ? 'PUT' : 'POST' });
-        setConnections(previous => [...previous.filter(item => item.id !== value.id), value]); setForm({ ...value, password: undefined }); onMessage(t('已保存'));
+        setConnections(previous => previous.some(item => item.id === value.id) ? previous.map(item => item.id === value.id ? value : item) : [...previous, value]); setForm({ ...value, password: undefined }); onMessage(t('已保存'));
       }
     } catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   };
-  return <section className="settings-card connections-settings dynamic-source">
+  return <section id="settings-connections" className="settings-card connections-settings dynamic-source">
     <h3>{t('连接关联')}</h3>
     <fieldset disabled={busy}>
       <label>{t('已保存连接')}<SearchSelect label={t('已保存连接')} value={form.id || ''} options={connections.map(value => ({ value: value.id!, label: `${value.name} · ${value.redshift ? 'Redshift' : 'PostgreSQL'}` }))} placeholder={t('选择已保存的连接')} onChange={id => { const value = connections.find(item => item.id === id); setForm(value ? { ...value, password: undefined } : initial()); setError(''); }} /></label>
+      <div className="connection-order-controls"><button title={t('上移连接')} aria-label={t('上移连接')} disabled={selectedIndex <= 0} onClick={() => void reorder(-1)}>↑</button><button title={t('下移连接')} aria-label={t('下移连接')} disabled={selectedIndex < 0 || selectedIndex === connections.length - 1} onClick={() => void reorder(1)}>↓</button><small>{t('排序第一个连接将作为动态数据源的默认连接')}</small></div>
       <div className="connection-grid">
         <label>{t('连接名称')}<input value={form.name} maxLength={128} onChange={event => change({ name: event.target.value })} /></label>
         <label>{t('数据库类型')}<select value={form.redshift ? 'redshift' : 'postgresql'} onChange={event => { const redshift = event.target.value === 'redshift'; change({ redshift, port: form.port === 5432 || form.port === 5439 ? redshift ? 5439 : 5432 : form.port }); }}><option value="postgresql">PostgreSQL</option><option value="redshift">Redshift</option></select></label>

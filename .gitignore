@@ -15,6 +15,7 @@ frontend/vite.config.ts.timestamp-*
 *.db-*
 *.log
 MyBI.exe
+myquery_core.dll
 artifacts/
 data/
 datasets/

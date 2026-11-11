@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, Dataset, json } from './dashboard';
 import { getLocale, t, useLanguage } from './i18n';
 import { SearchSelect } from './SearchSelect';
+import { formatUpdatedAt } from './dateTime';
 
 export function queryDuration(seconds?: number | null): string {
   if (seconds == null) return '—';
@@ -17,6 +18,7 @@ export function executionError(value?: string | null): string {
 export type DynamicSourceConfig = {
   name: string; connection_id: string; database?: string; mode: string; sql: string; schema_name: string; object_name: string;
   schedule: { enabled: boolean; time: string; timezone: string }; version?: number;
+  field_settings?: { renames?: Record<string, string> };
 };
 type Source = DynamicSourceConfig;
 export type DynamicSourcePreview = { schema: { name: string; type: string }[]; rows: Record<string, unknown>[]; row_count: number; duration_seconds: number; field_formats: Record<string, unknown>; preview_id: string };
@@ -24,7 +26,7 @@ type DatabaseObject = { database_name: string; schema_name: string; object_name:
 const objectKey = (value: DatabaseObject) => JSON.stringify([value.database_name, value.schema_name, value.object_name, value.kind]);
 const initial = (): Source => ({ name: '', connection_id: '', mode: 'sql', sql: '', schema_name: '', object_name: '', schedule: { enabled: false, time: '06:00', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } });
 
-export function DynamicSource({ dataset, onSaved, onBusy, onPreview, onReady, annotationOrder = [] }: { annotationOrder?: string[]; dataset?: Dataset; onSaved: (value: Dataset) => void; onBusy?: (busy: boolean) => void; onPreview?: (source: Source, preview: DynamicSourcePreview) => void; onReady?: (ready: boolean) => void }) {
+export function DynamicSource({ dataset, onSaved, onBusy, onPreview, onReady, annotationOrder = [], active = true }: { active?: boolean; annotationOrder?: string[]; dataset?: Dataset; onSaved: (value: Dataset) => void; onBusy?: (busy: boolean) => void; onPreview?: (source: Source, preview: DynamicSourcePreview) => void; onReady?: (ready: boolean) => void }) {
   const { locale } = useLanguage();
   const [source, setSource] = useState<Source>(initial);
   const [busy, setBusy] = useState(!!dataset), [error, setError] = useState(''), [notice, setNotice] = useState('');
@@ -52,6 +54,9 @@ export function DynamicSource({ dataset, onSaved, onBusy, onPreview, onReady, an
       .finally(() => { if (active) setLoadingConnections(false); });
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    if (active && !dataset && !source.connection_id && connections.length) setSource(previous => ({ ...previous, connection_id: connections[0].id, database: connections[0].database }));
+  }, [active, dataset?.id, source.connection_id, connections]);
   useEffect(() => {
     if (!source.connection_id) return;
     let active = true;
@@ -98,12 +103,10 @@ export function DynamicSource({ dataset, onSaved, onBusy, onPreview, onReady, an
     setBusy(true); onBusy?.(true); setError(''); setNotice(''); setFailedDuration(null);
     try {
       if (onPreview && (action === 'validate' || action === 'preview')) {
-        let value = previews.current.get(queryKey);
-        if (!value || action === 'validate') {
-          const result = await api('/sources/preview', json({ ...source, annotation_order: annotationOrder }));
-          if (value) dispose(value);
-          value = result as DynamicSourcePreview; previews.current.set(queryKey, value);
-        }
+        const previous = previews.current.get(queryKey);
+        const value = await api('/sources/preview' + (dataset ? '?dataset_id=' + encodeURIComponent(dataset.id) : ''), json({ ...source, annotation_order: annotationOrder })) as DynamicSourcePreview;
+        if (previous) dispose(previous);
+        previews.current.set(queryKey, value);
         setValidation(value);
         if (action === 'preview') {
           previews.current.forEach((unused, key) => { if (key !== queryKey) { dispose(unused); previews.current.delete(key); } });
@@ -149,11 +152,11 @@ export function DynamicSource({ dataset, onSaved, onBusy, onPreview, onReady, an
       {source.mode === 'sql' && <label>SQL<textarea className="source-sql" rows={6} value={source.sql} spellCheck={false} placeholder="SELECT ..." onChange={event => change({ sql: event.target.value })} /></label>}
     </fieldset>
     <div className="source-actions"><button type="button" disabled={busy || !ready} onClick={() => void run('validate')}>{t('验证查询')}</button>{!onPreview && <button type="button" className="primary" disabled={busy || !ready || !source.name.trim()} onClick={() => void run('save')}>{busy ? t('处理中…') : t('保存')}</button>}{dataset && <><button type="button" disabled={busy || changed} onClick={() => void run('cache')}>{t('获取今日数据')}</button><button type="button" disabled={busy || changed} onClick={() => void run('refresh')}>{t('强制刷新')}</button></>}</div>
-    {changed && dataset && <p className="source-hint">{t('请先保存连接或任务修改，再刷新数据。')}</p>}
+    {changed && dataset && !onPreview && <p className="source-hint">{t('请先保存连接或任务修改，再刷新数据。')}</p>}
     {error && <p role="alert" className="source-error">{error}</p>}
     {failedDuration != null && <p>{t('查询耗时')} {queryDuration(failedDuration)}</p>}
     {notice && <p role="status" className="source-notice">{notice}</p>}
     {validation && <section className="source-validation"><p>{t('验证成功')} · {validation.row_count.toLocaleString(locale)} {t('行')} · {t('查询耗时')} {queryDuration(validation.duration_seconds)}</p></section>}
-    {dataset?.dynamic && <dl className="source-status"><dt>{t('上次查询耗时')}</dt><dd>{queryDuration(dataset.dynamic.duration_seconds)}</dd><dt>{t('上次执行')}</dt><dd>{dataset.dynamic.last_run_at ? new Date(dataset.dynamic.last_run_at).toLocaleString(locale) : '—'}</dd>{dataset.dynamic.last_error && <><dt>{t('最近错误')}</dt><dd className="source-error">{executionError(dataset.dynamic.last_error)}</dd></>}</dl>}
+    {dataset?.dynamic && <dl className="source-status"><dt>{t('上次查询耗时')}</dt><dd>{queryDuration(dataset.dynamic.duration_seconds)}</dd><dt>{t('上次执行')}</dt><dd>{formatUpdatedAt(dataset.dynamic.last_run_at)}</dd>{dataset.dynamic.last_error && <><dt>{t('最近错误')}</dt><dd className="source-error">{executionError(dataset.dynamic.last_error)}</dd></>}</dl>}
   </Wrapper>;
 }

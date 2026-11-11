@@ -1,8 +1,10 @@
+import { formatUpdatedAt } from './dateTime';
 import { useEffect, useRef, useState } from 'react';
 import { api, Dataset } from './dashboard';
 import { t, useLanguage } from './i18n';
 import { DynamicSource, executionError, queryDuration } from './DynamicSource';
 import { Pagination } from './Pagination';
+import { Icon } from './Icon';
 
 type ManagedFile = { name: string; bytes: number; date?: string; duration_seconds?: number };
 
@@ -56,15 +58,20 @@ function DatasetReferences({ dataset, deleting, onDeleted, onClose }: { dataset:
   </dialog>;
 }
 
-export function DatasetManager({ datasets, onSaved, onDeleted, onConnect }: { datasets: Dataset[]; onSaved: (value: Dataset) => void; onDeleted: (id: string) => void; onConnect: () => void }) {
+export function DatasetManager({ datasets, onSaved, onDeleted, onConnect, onView, onMessage }: { onMessage: (text: string) => void; onView: (value: Dataset) => void; datasets: Dataset[]; onSaved: (value: Dataset) => void; onDeleted: (id: string) => void; onConnect: () => void }) {
   useLanguage();
   const [selected, setSelected] = useState('');
   const [requestedPage, setPage] = useState(0), [action, setAction] = useState<{ dataset: Dataset; deleting: boolean } | null>(null);
+  const ordered = [...datasets].sort((a, b) => new Date(b.updated_at || b.data_as_of || 0).getTime() - new Date(a.updated_at || a.data_as_of || 0).getTime());
   const page = Math.min(requestedPage, Math.max(0, Math.ceil(datasets.length / 10) - 1));
   const dataset = datasets.find(value => value.id === selected);
-  return <main className="workspace dataset-management"><header className="reports-heading"><h2>{t('数据集管理')}</h2></header>
-    <div className="dataset-management-scroll"><table className="reports-table"><thead><tr><th>ID</th><th>{t('名称')}</th><th>{t('指纹ID')}</th><th>{t('类型')}</th><th>{t('操作')}</th></tr></thead><tbody>{datasets.slice(page * 10, (page + 1) * 10).map(value => <tr key={value.id}><td>{value.id}</td><td><strong>{value.name}</strong>{value.dynamic?.last_error && <small className="source-error">{executionError(value.dynamic.last_error)}</small>}</td><td className="dataset-fingerprint" title={value.fingerprint}>{value.fingerprint || '—'}</td><td>{t(value.dynamic ? '动态' : '静态')}</td><td><div className="report-actions"><button onClick={() => setSelected(value.id)}>{t('管理')}</button><button onClick={() => setAction({ dataset: value, deleting: false })}>{t('查看引用')}</button><button onClick={() => setAction({ dataset: value, deleting: true })}>{t('删除')}</button></div></td></tr>)}</tbody></table>{!datasets.length && <p>{t('暂无数据集')}</p>}</div>
-    <Pagination page={page} total={datasets.length} onChange={setPage} /><footer className="dataset-management-footer"><button className="primary" onClick={onConnect}>{t('接入数据')}</button></footer>
+  const copyId = async (id: string) => {
+    try { await navigator.clipboard.writeText(id); onMessage(t('ID 已复制')); }
+    catch { onMessage(t('复制 ID 失败')); }
+  };
+  return <main className="workspace dataset-management"><header className="reports-heading"><h2>{t('数据集管理')}</h2><button className="import-button square-add-button" title={t("接入数据")} aria-label={t("接入数据")} onClick={onConnect}>+</button></header>
+    <div className="dataset-management-scroll"><table className="reports-table"><thead><tr><th>{t('名称')}</th><th>ID</th><th>{t('类型')}</th><th>{t('更新时间')}</th><th>{t('Owner')}</th><th>{t('状态')}</th><th aria-label={t('操作')} /></tr></thead><tbody>{ordered.slice(page * 10, (page + 1) * 10).map(value => <tr key={value.id}><td><strong>{value.name}</strong></td><td className="report-id" title={value.storage_path}><div className="resource-id-cell"><span>{value.fingerprint || value.id}</span><button className="resource-id-copy" title={t('复制 ID')} aria-label={t('复制 ID')} onClick={() => void copyId(value.fingerprint || value.id)}><Icon name="copy" /></button></div></td><td>{t(value.dynamic ? '动态' : '静态')}</td><td title={formatUpdatedAt(value.updated_at)}>{formatUpdatedAt(value.updated_at)}</td><td>{value.owner || '—'}</td><td title={value.dynamic?.last_error ? executionError(value.dynamic.last_error) : undefined} className={value.dynamic?.last_error ? 'source-error' : undefined}>{t(value.dynamic?.refreshing ? '刷新中…' : value.dynamic?.last_error ? '失败' : '正常')}</td><td><div className="report-actions"><button onClick={() => onView(value)}>{t("查看")}</button><button onClick={() => setSelected(value.id)}>{t('管理')}</button><button onClick={() => setAction({ dataset: value, deleting: false })}>{t('查看引用')}</button><button onClick={() => setAction({ dataset: value, deleting: true })}>{t('删除')}</button></div></td></tr>)}</tbody></table>{!datasets.length && <p>{t('暂无数据集')}</p>}<Pagination page={page} total={datasets.length} onChange={setPage} /></div>
+
     {dataset && <DatasetDetails dataset={dataset} onSaved={onSaved} onClose={() => setSelected('')} />}
     {action && <DatasetReferences dataset={action.dataset} deleting={action.deleting} onDeleted={onDeleted} onClose={() => setAction(null)} />}
   </main>;

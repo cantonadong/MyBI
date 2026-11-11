@@ -40,10 +40,10 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
   const nextMetric = metrics.find(f => !measures.includes(f.name)) || metrics[0];
   return <>
     {!['kpi', 'filter'].includes(c.type) && <fieldset className="axis-settings"><legend>{t('数据标签设置')}</legend>
-      <label>{t('显示密度')}<select aria-label={t('显示密度')} value={c.labelDensity || 'auto'} onChange={event => onChange({ labelDensity: event.target.value as ChartConfig['labelDensity'] })}>
-        <option value="auto">{t('自动')}</option><option value="all">{t('全部')}</option>{['1', '2', '3'].map(value => <option key={value} value={value}>{t('每隔 {0} 个', value)}</option>)}
-      </select></label>
-      <label>{t('数值单位')}<select aria-label={t('数值单位')} value={c.labelUnit || 'none'} onChange={event => onChange({ labelUnit: event.target.value as ChartConfig['labelUnit'] })}>
+      {!['table', 'gauge'].includes(c.type) && <label>{t('数据标签显示位置')}<select aria-label={t('数据标签显示位置')} value={c.labelPosition || 'auto'} onChange={event => onChange({ labelPosition: event.target.value as ChartConfig['labelPosition'] })}>
+        <option value="auto">{t('自动')}</option><option value="top">{t('上方')}</option><option value="center">{t('中心')}</option><option value="bottom">{t('底部')}</option>
+      </select></label>}
+      <label>{t('数值单位')}<select aria-label={t('数值单位')} value={c.labelUnit || 'auto'} onChange={event => onChange({ labelUnit: event.target.value as ChartConfig['labelUnit'] })}>
         <option value="auto">{t('自动')}</option><option value="none">{t('原值')}</option><option value="k">K</option><option value="m">M</option><option value="b">B</option>
       </select></label>
     </fieldset>}
@@ -60,6 +60,11 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
     {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'histogram', 'candlestick'].includes(c.type) && <label>{c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')}<select aria-label={c.horizontal ? t('Y 轴显示密度') : t('X 轴显示密度')} value={c.axisLabelDensity || 'auto'} onChange={event => onChange({ axisLabelDensity: event.target.value as ChartConfig['axisLabelDensity'] })}>
       <option value="auto">{t('自动')}</option><option value="all">{t('全部')}</option>{['1', '2', '3'].map(value => <option key={value} value={value}>{t('每隔 {0} 个', value)}</option>)}
     </select></label>}
+    {!['kpi', 'filter'].includes(c.type) && <><label>{t('指标数值标签显示密度')}<select aria-label={t('指标数值标签显示密度')} value={c.labelDensity || 'auto'} onChange={event => onChange({ labelDensity: event.target.value as ChartConfig['labelDensity'] })}>
+        <option value="auto">{t('自动')}</option><option value="all">{t('全部')}</option>{['1', '2', '3'].map(value => <option key={value} value={value}>{t('每隔 {0} 个', value)}</option>)}
+      </select></label>
+      <label>{t('只显示前 X 个')}<input type="number" aria-label={t('只显示前 X 个')} min={1} max={10000} step={1} placeholder={t('不限制')} value={c.labelLimit ?? ''} onChange={event => onChange({ labelLimit: event.target.value === '' ? undefined : Math.max(1, Math.min(10000, Math.trunc(Number(event.target.value)))) })} /></label>
+      </>}
     {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'candlestick'].includes(c.type) && <>
       <label>{t('X 轴排序')}<select aria-label={t('X 轴排序')} value={c.xAxisSort || 'none'} onChange={event => onChange({ xAxisSort: event.target.value as ChartConfig['xAxisSort'] })}>
         <option value="none">{t('默认（数据顺序）')}</option><option value="asc">{t('升序')}</option><option value="desc">{t('降序')}</option><option value="custom">{t('自定义')}</option>

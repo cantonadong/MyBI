@@ -20,6 +20,7 @@ from .api.sources import router as sources_router
 from .storage import materialize_existing
 from .connections import router as connections_router, migrate_connections
 from .shared_data import synchronize_connections
+from . import public_access
 
 
 @asynccontextmanager
@@ -27,6 +28,7 @@ async def lifespan(app):
     migrate_connections()
     synchronize_connections()
     materialize_existing()
+    public_access.startup()
     stop = Event()
     worker = None
     if os.getenv('MYBI_SCHEDULER', 'true').lower() == 'true':
@@ -36,6 +38,7 @@ async def lifespan(app):
     try:
         yield
     finally:
+        public_access.shutdown()
         stop.set()
         if worker:
             worker.join(timeout=2)
@@ -69,11 +72,17 @@ Base.metadata.create_all(engine)
 with engine.begin() as connection:
     if 'author_id' not in {column['name'] for column in inspect(connection).get_columns('chart_comments')}:
         connection.execute(text('ALTER TABLE chart_comments ADD COLUMN author_id INTEGER NOT NULL DEFAULT 1'))
+    identity_columns = {column['name'] for column in inspect(connection).get_columns('resource_identities')}
+    if 'owner' not in identity_columns:
+        connection.execute(text('ALTER TABLE resource_identities ADD COLUMN owner VARCHAR(255)'))
+    if 'updated_at' not in identity_columns:
+        connection.execute(text('ALTER TABLE resource_identities ADD COLUMN updated_at TIMESTAMP'))
 app.include_router(datasets_router)
 app.include_router(dashboards_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(connections_router)
+app.include_router(public_access.router)
 
 
 @app.exception_handler(RequestValidationError)

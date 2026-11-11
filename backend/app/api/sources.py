@@ -14,7 +14,7 @@ from ..connections import resolve_connection
 from ..shared_data import config_path
 from ..dynamic import SourceConfig, SourceRequest, cache_day, claim, configured_preview, discard_source_preview, execute, next_run, read_source_preview, refresh, release, safe_config, save_cache, stage_source_preview, stored_config, utc_now
 from ..models import Dataset, DynamicSource
-from ..storage import dataset_dir, write_dataset, rollback_files
+from ..storage import dataset_dir, dataset_manifest_path, write_dataset, rollback_files
 from .datasets import annotation_preview, dataset_payload, get_pair, preview_payload, publish
 
 router = APIRouter(prefix='/api')
@@ -60,8 +60,12 @@ def validate_source(body: SourceConfig):
 
 
 @router.post('/sources/preview')
-def preview_source(body: SourceConfig):
-    config = resolve_connection(stored_config(body))
+def preview_source(body: SourceConfig, dataset_id: str | None = None):
+    with SessionLocal() as session:
+        source = session.get(DynamicSource, dataset_id) if dataset_id else None
+        if dataset_id and not source:
+            raise HTTPException(404, '动态数据源不存在')
+        config = resolve_connection(stored_config(body, source.config if source else None))
     preview, duration = execute(config)
     preview = annotation_preview(preview, body.annotation_order)
     preview_id = stage_source_preview(preview, config, duration)
@@ -122,14 +126,42 @@ def get_source(dataset_id: str):
 def save_source(dataset_id: str, body: SourceRequest):
     if not body.name.strip():
         raise HTTPException(422, '数据集名称不能为空')
+    if any(not name.strip() or len(name.strip()) > 255 for name in body.display_names.values()):
+        raise HTTPException(422, '展示名称不能为空，且不能超过 255 个字符')
     token = claim(dataset_id)
     try:
+        if body.preview_id:
+            with SessionLocal() as session:
+                source = session.get(DynamicSource, dataset_id)
+                if not source:
+                    raise HTTPException(404, '动态数据源不存在')
+                config = stored_config(body, source.config)
+            execution_config = resolve_connection(config)
+            preview, duration = read_source_preview(body.preview_id, execution_config)
+            preview = configured_preview(preview, execution_config)
+            if not body.display_names.keys() <= {field.name for field in preview.fields}:
+                raise HTTPException(422, 'Unknown field')
+            schedule = body.schedule.model_dump()
+            day = cache_day(schedule)
+            root = dataset_dir(dataset_id) / 'cache'
+            def on_publish(session, item, snapshot, files):
+                snapshot.schema_json = [{**field, 'display_name': body.display_names.get(field['name'], field['display_name']).strip()} for field in snapshot.schema_json]
+                source = session.get(DynamicSource, dataset_id)
+                source.config, source.schedule = config, schedule
+                source.duration_seconds, source.last_run_at = duration, utc_now()
+                source.next_run_at, source.last_error = next_run(schedule), None
+                source.lease_token, source.lease_until = None, None
+                files.enter_context(rollback_files([root / f'{day}.parquet', root / f'{day}.json']))
+                save_cache(snapshot, execution_config, schedule, duration, day)
+            result = publish(body.name.strip(), preview, 'dynamic', dataset_id=dataset_id, version=body.version, formats=body.formats, on_publish=on_publish, annotation_fields=body.annotation_fields)
+            discard_source_preview(body.preview_id)
+            return result
         with ExitStack() as files, SessionLocal.begin() as session:
             source = session.get(DynamicSource, dataset_id)
             result = session.execute(update(Dataset).where(Dataset.id == dataset_id, Dataset.version == body.version).values(name=body.name.strip(), version=Dataset.version + 1))
             if result.rowcount != 1:
                 raise HTTPException(409, '数据集已被修改，请重新打开后再试')
-            files.enter_context(rollback_files([dataset_dir(dataset_id) / 'dataset.json']))
+            files.enter_context(rollback_files([dataset_manifest_path(dataset_id, session)]))
             source.config = stored_config(body, source.config)
             source.schedule = body.schedule.model_dump()
             source.next_run_at = next_run(source.schedule)

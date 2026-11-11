@@ -50,6 +50,10 @@ def run(stop: Event):
             for dataset_id in [*sorted(report_ids), *ids]:
                 if stop.is_set():
                     break
+                with SessionLocal() as session:
+                    source = session.get(DynamicSource, dataset_id)
+                    if not source or source.config.get('sync_requires_connection'):
+                        continue
                 try:
                     refresh(dataset_id, force=True, due_only=dataset_id not in report_ids, scheduled_after=report_ids.get(dataset_id))
                 except Exception:

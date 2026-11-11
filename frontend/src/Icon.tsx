@@ -1,5 +1,6 @@
 const paths: Record<string, string> = {
   remove: 'M3 3 21 21M3 21 21 3',
+  image: 'M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M8 7h.01',
   copy: 'M9 8h11v13H9zM5 16H3V3h11v2',
   publish: 'M12 16V3m-5 5 5-5 5 5M4 14v7h16v-7',
   view: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zm13 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0',

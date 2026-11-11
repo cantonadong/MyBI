@@ -14,7 +14,7 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
   const groupName = (group: unknown) => formatField(group, c.fieldFormats?.[c.legendField || '']);
   const named = names.map((name, i) => ({ name, value: values[i] }));
   const colors = chartColors(c);
-  const base: any = { animation: false, color: colors, tooltip: { renderMode: 'richText', valueFormatter: (value: number) => formatValue(Number(value), c.format) }, legend: { show: chartLegend(c), bottom: 0 } };
+  const base: any = { animation: false, color: colors, tooltip: { renderMode: 'richText', valueFormatter: (value: number) => formatValue(Number(value), c.format) }, legend: { bottom: 0 } };
   const cart: any = { grid: { left: 65, right: 30, top: 25, bottom: 55 }, xAxis: { type: 'category', data: names }, yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatValue(value, c.format) } } };
   const label = { show: c.labels };
   if (c.type === 'candlestick') return { ...base, ...cart, yAxis: { ...cart.yAxis, scale: true }, series: [{ type: 'candlestick', name: c.title, data: rows.map(row => (c.measures || []).map(field => row[field] == null ? null : Number(row[field]))), itemStyle: { color: colors[0], color0: colors[1], borderColor: colors[0], borderColor0: colors[1] } }] };
@@ -59,6 +59,10 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
     const field = c.legendField;
     const categories = [...new Map(rows.map(row => [JSON.stringify(row[d]), row[d]])).values()];
     const groups = [...new Map(rows.map(row => [JSON.stringify(row[field]), row[field]])).values()];
+    if (c.legendOrder) {
+      const ranks = new Map(c.legendOrder.map((value, index) => [JSON.stringify(value), index]));
+      groups.sort((a, b) => (ranks.get(JSON.stringify(a)) ?? ranks.size) - (ranks.get(JSON.stringify(b)) ?? ranks.size));
+    }
     const indexed = new Map(rows.map(row => [JSON.stringify([row[d], row[field]]), row]));
     const exclusiveGroups = indexed.size === categories.length;
     const templates = [...series];
@@ -74,7 +78,7 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
       if (item.type === 'line') item.lineStyle = { ...item.lineStyle, color };
     });
   }
-  return { ...base, ...cart, ...(c.horizontal ? { xAxis: cart.yAxis, yAxis: cart.xAxis } : {}), series };
+  return { ...base, ...cart, ...(c.horizontal ? { xAxis: cart.yAxis, yAxis: { ...cart.xAxis, inverse: true } } : {}), series };
 }
 
 export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map', size: { width: number; height: number; measureText?: (text: string) => number } = { width: 600, height: 300 }): any {
@@ -107,7 +111,14 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       return c.xAxisSort === 'desc' ? -difference : difference;
     });
   }
+  if (c.labelLimit && c.dimension && ['bar', 'line', 'area', 'mixed', 'candlestick', 'waterfall', 'boxplot', 'heatmap'].includes(c.type)) {
+    const dimension = c.dimension;
+    const categories = new Set([...new Set(rows.map(row => categoryName(row[dimension])))].slice(0, c.labelLimit));
+    rows = rows.filter(row => categories.has(categoryName(row[dimension])));
+  }
   const option = buildOption(c, rows, mapName, locale);
+  const legendObjects = ['pie', 'funnel'].includes(c.type) ? option.series[0].data : option.series;
+  option.legend.show = chartLegend(c, new Set(legendObjects.map((item: any) => item.name).filter((name: unknown) => name != null)).size);
   if (originalHeatmapY) {
     option.series[0].data.forEach((point: number[]) => { point[1] = originalHeatmapY.indexOf(option.yAxis.data[point[1]]); });
     option.yAxis.data = originalHeatmapY;
@@ -120,9 +131,10 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   const category = (value: unknown, field: string) => categoryLabels.get(String(value)) ?? (value == null || value === 'NULL' ? 'NULL' : formatted(c.fieldFormats?.[field] && c.fieldFormats[field].kind !== 'text' ? Number(value) : value, field));
   const labelValue = (value: unknown, field: string) => {
     const format = metricFormat(c, field);
-    if (!c.labelUnit || c.labelUnit === 'none' || typeof value !== 'number' || format?.format === 'percent' || (!format && c.format === 'percent')) return metricValue(value, field);
+    const setting = c.labelUnit || 'auto';
+    if (setting === 'none' || typeof value !== 'number' || format?.format === 'percent' || (!format && c.format === 'percent')) return metricValue(value, field);
     const magnitude = Math.abs(value);
-    const unit = c.labelUnit === 'auto' ? magnitude >= 1e9 ? 'b' : magnitude >= 1e6 ? 'm' : magnitude >= 1e3 ? 'k' : 'none' : c.labelUnit;
+    const unit = setting === 'auto' ? magnitude >= 1e9 ? 'b' : magnitude >= 1e6 ? 'm' : magnitude >= 1e3 ? 'k' : 'none' : setting;
     if (unit === 'none') return metricValue(value, field);
     const divisor = { k: 1e3, m: 1e6, b: 1e9 }[unit];
     return formatField(value / divisor, { kind: 'decimal', format: 'number', decimals: format?.decimals || 1, rounding: format?.rounding }) + unit.toUpperCase();
@@ -162,6 +174,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     }) } };
   }
   const labelStyle = { color: '#202738', fontWeight: 'normal', textBorderColor: '#fff', textBorderWidth: 3 };
+  const labelPosition = c.labelPosition === 'center' ? 'inside' : c.labelPosition && c.labelPosition !== 'auto' ? c.labelPosition : undefined;
   const hideOverlap = !c.labelDensity || c.labelDensity === 'auto';
   type LabelRect = { x: number; y: number; width: number; height: number };
   const placedLabels = new Map<string, LabelRect>();
@@ -184,6 +197,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     return rect[axis] === params.labelRect[axis] ? { hideOverlap } : { x: rect.x, y: rect.y, align: 'left', verticalAlign: 'top', hideOverlap };
   };
   option.series.forEach((series: any) => {
+    const labelIndices = c.labelLimit ? new Set(series.data.map((value: unknown, index: number) => value == null ? -1 : index).filter((index: number) => index >= 0).slice(0, c.labelLimit)) : undefined;
     const field = series._field || primary;
     delete series._field;
     delete series._displayName;
@@ -208,20 +222,29 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       field + ': ' + formatted(params.value[1], field),
       ...(c.secondMeasure ? [c.secondMeasure + ': ' + formatted(params.value[2], c.secondMeasure)] : []),
     ].join('\n');
-    series.labelLayout = cartesian || c.type === 'scatter' ? layoutLabel : { ...series.labelLayout, moveOverlap: c.horizontal ? 'shiftX' : 'shiftY', hideOverlap };
+    series.labelLayout = labelPosition ? { hideOverlap } : cartesian || c.type === 'scatter' ? layoutLabel : { ...series.labelLayout, moveOverlap: c.horizontal ? 'shiftX' : 'shiftY', hideOverlap };
     series.labelLine = { ...series.labelLine, show: true, lineStyle: { ...series.labelLine?.lineStyle, color: '#8790a4', width: 1 } };
-    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.type === 'pie' && (c.piePercent ?? c.legendPercent) ? true : c.labels, ...(series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
+    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.type === 'pie' && (c.piePercent ?? c.legendPercent) ? true : c.labels, ...(labelPosition ? { position: labelPosition } : series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
+      if (labelIndices && !labelIndices.has(params.dataIndex)) return '';
       if ((cartesian || (c.labelDensity && c.labelDensity !== 'auto')) && (params.dimensionIndex ?? params.dataIndex) % stride !== 0) return '';
       if (['tree', 'treemap', 'sunburst'].includes(c.type)) return c.labels ? params.name + ': ' + valueText(params.value, true) : params.name;
       if (c.type === 'pie' && (c.piePercent ?? c.legendPercent)) return `${valueText(params.value, true)} (${formatField(Number(params.percent || 0) / 100, { kind: 'decimal', format: 'percent', decimals: 1 })})`;
       return valueText(params.value, true);
     } };
+    if (c.type === 'candlestick' && c.labels) {
+      const candleStride = !c.labelDensity || c.labelDensity === 'auto' ? Math.max(1, Math.ceil(series.data.length * (textWidth + 20) / Math.max(1, size.width - 95))) : stride;
+      series.markPoint = {
+        silent: true, symbol: 'circle', symbolSize: 0,
+        label: { ...series.label, position: labelPosition || 'inside', align: 'center', formatter: (params: any) => labelValue(params.value, params.name) },
+        data: series.data.flatMap((values: (number | null)[], index: number) => index % candleStride || (labelIndices && !labelIndices.has(index)) || values.some(value => value === null || !Number.isFinite(value)) ? [] : values.map((value, metricIndex) => ({ coord: [index, value], value, name: c.measures?.[metricIndex] || primary }))),
+      };
+    }
     if (c.type === 'waterfall' && c.labels) {
       const renderItem = series.renderItem;
       series.renderItem = (params: any, api: any) => {
         const shape = renderItem(params, api);
         shape.textContent = { type: 'text', style: { ...labelStyle, text: series.label.formatter({ dataIndex: params.dataIndex, value: [api.value(0), api.value(1), api.value(2)] }), fill: labelStyle.color, stroke: labelStyle.textBorderColor, lineWidth: labelStyle.textBorderWidth } };
-        shape.textConfig = { position: 'top' };
+        shape.textConfig = { position: labelPosition || 'top' };
         return shape;
       };
     }

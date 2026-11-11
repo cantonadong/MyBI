@@ -22,6 +22,15 @@ class TabularPreview:
     raw_rows: list[list[object]] | None = None
 
 
+def default_dimension(preview: TabularPreview) -> TabularPreview:
+    if preview.fields and all(field.type in {'number', 'integer'} for field in preview.fields):
+        fields = [Field(preview.fields[0].name, 'string'), *preview.fields[1:]]
+        originals = preview.raw_rows or preview.rows
+        rows = [[None if row[0] is None else str(originals[index][0]), *row[1:]] for index, row in enumerate(preview.rows)]
+        return TabularPreview(preview.headers, rows, fields, preview.raw_rows)
+    return preview
+
+
 def _value(raw: str) -> object:
     if raw == "":
         return ""
@@ -69,7 +78,7 @@ def infer_formats(preview: TabularPreview) -> dict:
     for index, field in enumerate(preview.fields):
         numeric = field.type in {'number', 'integer'}
         raw = (preview.raw_rows or preview.rows)[0][index]
-        percent = numeric and ((isinstance(raw, str) and raw.strip().endswith('%')) or bool(re.search(r'(?:^|[^a-z0-9])(?:pct|percent(?:age)?|ratio|rario|rate)(?:$|[^a-z0-9])', field.name, re.IGNORECASE)))
+        percent = numeric and ((isinstance(raw, str) and raw.strip().endswith('%')) or bool(re.search(r'(?:^|[^a-z0-9])(?:retention|share|pct|percent(?:age)?|ratio|rario|rate)(?:$|[^a-z0-9])', field.name, re.IGNORECASE)))
         decimal = numeric and (field.type != 'integer' or percent or 'per' in field.name.lower())
         decimals = 1 if decimal else 0
         formats[field.name] = {'kind': ('decimal' if decimal else 'integer') if numeric else 'text', 'format': 'percent' if percent else 'number', 'decimals': decimals}
@@ -103,4 +112,4 @@ def parse_delimited(text: str, delimiter: str | None = None, has_header: bool = 
             for row_index, row in enumerate(rows):
                 if row[index] is not None:
                     row[index] = records[row_index][index]
-    return TabularPreview(headers, rows, fields, records)
+    return default_dimension(TabularPreview(headers, rows, fields, records))
