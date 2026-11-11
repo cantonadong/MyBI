@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, Dataset, Filter, Tile, lastDateRange } from './dashboard';
 import { ChartConfig } from './charts/registry';
-import { formatChartField as formatField, parseCategoryOrder } from './fieldDisplay';
+import { formatChartField as formatField, parseCategoryOrder, titleCase } from './fieldDisplay';
 import { t, translate, useChartLanguage } from './i18n';
 
 type Value = string | number | boolean | null;
@@ -22,7 +22,7 @@ function FilterChoices({ dataset, field, filters, values, tiled, multiple, disab
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [dataset.id, dataset.version, field, query, disabled]);
-  const label = (value: Value) => value === null ? t('（空）') : formatField(value, dataset.field_formats?.[field], locale);
+  const label = (value: Value) => value === null ? t('（空）') : titleCase(formatField(value, dataset.field_formats?.[field], locale));
   const choices = [...new Map([...options, ...values].map(value => [JSON.stringify(value), value])).values()];
   if (sort && sort !== 'none') {
     const ranks = parseCategoryOrder(orderText);
@@ -42,7 +42,7 @@ function FilterChoices({ dataset, field, filters, values, tiled, multiple, disab
         <summary aria-disabled={disabled || loading} onClick={event => { if (disabled || loading) event.preventDefault(); }}>{loading ? t('加载中…') : values.length ? values.map(label).join(', ') : t('请选择')}</summary>
         <div className="filter-multiselect-options">{choices.map(value => <label key={JSON.stringify(value)}><input type="checkbox" disabled={disabled || loading} checked={values.includes(value)} onChange={() => onChange(values.includes(value) ? values.filter(item => item !== value) : [...values, value])} /><span>{label(value)}</span></label>)}</div>
       </details> :
-      <select aria-label={dataset.schema.find(item => item.name === field)?.display_name || field} disabled={disabled || loading} value={values.length ? JSON.stringify(values[0]) : ''} onChange={event => onChange(event.target.value === '' ? [] : [JSON.parse(event.target.value)])}>
+      <select aria-label={titleCase(dataset.schema.find(item => item.name === field)?.display_name || field)} disabled={disabled || loading} value={values.length ? JSON.stringify(values[0]) : ''} onChange={event => onChange(event.target.value === '' ? [] : [JSON.parse(event.target.value)])}>
         <option value="">{loading ? t('加载中…') : ''}</option>{choices.map(value => <option key={JSON.stringify(value)} value={JSON.stringify(value)}>{label(value)}</option>)}
       </select>}
     {options.length >= 10000 && <small>{t('最多显示 10000 个不同值')}</small>}
@@ -104,7 +104,7 @@ export function FilterControl({ tile, dataset, global, onChange, onContentWidth,
       <label>{t('开始日期')}<input type="date" aria-label={t('开始日期')} max={c.filterRange?.[1] || undefined} value={c.filterRange?.[0] || ''} onChange={event => onChange({ filterRange: [event.target.value, c.filterRange?.[1] || ''], filterRangeAuto: false })} /></label>
       <label>{t('结束日期')}<input type="date" aria-label={t('结束日期')} min={c.filterRange?.[0] || undefined} value={c.filterRange?.[1] || ''} onChange={event => onChange({ filterRange: [c.filterRange?.[0] || '', event.target.value], filterRangeAuto: false })} /></label>
       {c.filterRange?.every(Boolean) && c.filterRange[0] > c.filterRange[1] && <p role="alert">{t('开始日期不能晚于结束日期')}</p>}
-    </div> : c.filterStyle === 'date-last' ? <div className="filter-relative"><div className="filter-relative-controls"><span>{t('最近')}</span><input type="number" min={1} max={10000} step={1} aria-label={t('最近数量')} value={c.filterLastCount || 1} onChange={event => { const value = event.target.valueAsNumber; if (Number.isInteger(value) && value >= 1 && value <= 10000) onChange({ filterLastCount: value }); }} /><select aria-label={t('日期单位')} value={c.filterLastUnit || 'day'} onChange={event => onChange({ filterLastUnit: event.target.value as ChartConfig['filterLastUnit'] })}>{(['day', 'week', 'month', 'quarter', 'year'] as const).map(unit => <option key={unit} value={unit}>{t({ day: '天', week: '周', month: '月', quarter: '季度', year: '年' }[unit])}</option>)}</select></div>{relativeRange.every(Boolean) && <small>{relativeRange.join(' — ')}</small>}</div> : fields.map((field, index) => <div className="filter-level" key={field}><span>{dataset.schema.find(item => item.name === field)?.display_name || field}</span>
+    </div> : c.filterStyle === 'date-last' ? <div className="filter-relative"><div className="filter-relative-controls"><span>{t('最近')}</span><input type="number" min={1} max={10000} step={1} aria-label={t('最近数量')} value={c.filterLastCount || 1} onChange={event => { const value = event.target.valueAsNumber; if (Number.isInteger(value) && value >= 1 && value <= 10000) onChange({ filterLastCount: value }); }} /><select aria-label={t('日期单位')} value={c.filterLastUnit || 'day'} onChange={event => onChange({ filterLastUnit: event.target.value as ChartConfig['filterLastUnit'] })}>{(['day', 'week', 'month', 'quarter', 'year'] as const).map(unit => <option key={unit} value={unit}>{t({ day: '天', week: '周', month: '月', quarter: '季度', year: '年' }[unit])}</option>)}</select></div>{relativeRange.every(Boolean) && <small>{relativeRange.join(' — ')}</small>}</div> : fields.map((field, index) => <div className="filter-level" key={field}><span>{titleCase(dataset.schema.find(item => item.name === field)?.display_name || field)}</span>
       <FilterChoices displayLocale={locale} dataset={dataset} field={field} tiled={c.filterStyle === 'tiles'} multiple={(c.filterSelection || (c.filterStyle === 'tiles' ? 'multiple' : 'single')) === 'multiple'} disabled={false} values={selected[field] || []} sort={c.filterSort} orderText={c.filterOrderText || ''}
         filters={[...active, ...fields.slice(0, index).flatMap(parent => selected[parent]?.length ? [{ field: parent, op: 'in', value: selected[parent] }] : [])]}
         onChange={values => onChange({ filterValues: { ...Object.fromEntries(fields.slice(0, index).map(parent => [parent, selected[parent] || []])), [field]: values } })} />
@@ -118,7 +118,7 @@ export function FilterProperties({ config: c, dataset, onChange }: { config: Cha
   const fields = (c.filterFields || []).filter(name => schema.some(field => field.name === name));
   const dateFields = schema.filter(field => field.type === 'date' || /^(dt|date)$/i.test(field.name));
   const candidates = c.filterStyle === 'date-last' ? dateFields : schema;
-  const options = candidates.map(field => <option key={field.name} value={field.name}>{field.display_name || field.name}</option>);
+  const options = candidates.map(field => <option key={field.name} value={field.name}>{titleCase(field.display_name || field.name)}</option>);
   return <>
     <label>{t('筛选器标题')}<input value={c.title || ''} onChange={event => onChange({ title: event.target.value })} /></label>
     {!schema.length && <p className="filter-hint">{t('数据集没有文本或日期维度')}</p>}
@@ -137,7 +137,7 @@ export function FilterProperties({ config: c, dataset, onChange }: { config: Cha
       </select></label>
       {c.filterSort === 'custom' && <label>{t('自定义筛选项顺序')}<textarea rows={5} value={c.filterOrderText || ''} placeholder={t('粘贴类别名称，每行一个，或用逗号、Tab 分隔')} onChange={event => onChange({ filterOrderText: event.target.value })} /><small>{t('按文本顺序排列，未列出的类别保留原顺序放在末尾。')}</small></label>}
     </>}
-    {c.filterStyle === 'cascade' ? <>{fields.map((field, index) => <div className="metric-binding-row" key={index}><label>{t('级联字段 {0}', index + 1)}<select value={field} onChange={event => onChange({ filterFields: fields.map((name, i) => i === index ? event.target.value : name), filterValues: {} })}>{schema.map(item => <option key={item.name} value={item.name} disabled={item.name !== field && fields.includes(item.name)}>{item.display_name || item.name}</option>)}</select></label><button className="binding-button metric-remove" aria-label={t('移除字段')} onClick={() => onChange({ filterFields: fields.filter((_, i) => i !== index), filterValues: {} })}>×</button></div>)}
+    {c.filterStyle === 'cascade' ? <>{fields.map((field, index) => <div className="metric-binding-row" key={index}><label>{t('级联字段 {0}', index + 1)}<select value={field} onChange={event => onChange({ filterFields: fields.map((name, i) => i === index ? event.target.value : name), filterValues: {} })}>{schema.map(item => <option key={item.name} value={item.name} disabled={item.name !== field && fields.includes(item.name)}>{titleCase(item.display_name || item.name)}</option>)}</select></label><button className="binding-button metric-remove" aria-label={t('移除字段')} onClick={() => onChange({ filterFields: fields.filter((_, i) => i !== index), filterValues: {} })}>×</button></div>)}
       <button disabled={fields.length >= schema.length} onClick={() => { const next = schema.find(field => !fields.includes(field.name)); if (next) onChange({ filterFields: [...fields, next.name], filterValues: {} }); }}>{t('添加级联字段')}</button>
     </> : <label>{t('筛选字段')}<select value={schema.some(field => field.name === c.dimension) ? c.dimension : ''} onChange={event => onChange({ dimension: event.target.value, filterStyle: dateFields.some(field => field.name === event.target.value) ? c.filterStyle === 'date-last' ? 'date-last' : 'date-range' : ['date-range', 'date-last'].includes(c.filterStyle || '') ? 'dropdown' : c.filterStyle, filterValues: {}, filterRange: ['', ''], filterRangeAuto: true })}><option value="">{t('请选择')}</option>{options}</select></label>}
     <p className="filter-hint">{t('筛选同一数据集的图表；级联字段按从上到下的顺序联动。')}</p>

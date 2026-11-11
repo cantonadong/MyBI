@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 import pytest
@@ -7,7 +9,24 @@ from app.main import app
 from app import dynamic
 from app.api import sources
 from app.imports.delimited import parse_delimited
-from app.storage import dataset_dir
+from app.storage import dataset_dir, dataset_manifest_path
+
+
+@pytest.mark.parametrize('redshift', [True, False])
+def test_recursive_cte_uses_the_shared_core_and_preserves_numeric_precision(monkeypatch, redshift):
+    from app import query_core
+    statement = 'WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM n WHERE value < 3) SELECT value FROM n;'
+    calls = []
+
+    @contextmanager
+    def query_result(config, sql, typed=False):
+        calls.append((config['redshift'], sql, typed))
+        yield {'headers': ['value', 'amount'], 'oids': [23, 1700], 'row_count': 1}, iter([['1', '0.123456789012345678']])
+
+    monkeypatch.setattr(query_core, 'query_result', query_result)
+    preview, _ = dynamic.execute_query({'mode': 'sql', 'sql': statement, 'redshift': redshift})
+    assert calls == [(redshift, statement, True)]
+    assert preview.rows == [[1, Decimal('0.123456789012345678')]]
 
 
 def test_staged_query_does_not_create_dataset_and_saves_full_result_without_requery(monkeypatch):
@@ -50,7 +69,7 @@ def test_cache_write_failure_keeps_previous_dataset_and_files(monkeypatch):
     cache = next((root / 'cache').glob('*.parquet'))
     previous_cache = cache.read_bytes()
     previous_index = cache.with_suffix('.json').read_bytes()
-    previous_manifest = (root / 'dataset.json').read_bytes()
+    previous_manifest = dataset_manifest_path(dataset['id']).read_bytes()
     assert 'never-return-this' not in previous_manifest.decode()
     assert 'password' not in client.get(f"/api/datasets/{dataset['id']}/dynamic").json()
     monkeypatch.setattr(dynamic, 'execute_query', lambda _: (parse_delimited('region\tamount\nSouth\t99.5'), 2.5))
@@ -65,7 +84,7 @@ def test_cache_write_failure_keeps_previous_dataset_and_files(monkeypatch):
     assert reopened['snapshot_id'] == dataset['snapshot_id']
     assert cache.read_bytes() == previous_cache
     assert cache.with_suffix('.json').read_bytes() == previous_index
-    assert (root / 'dataset.json').read_bytes() == previous_manifest
+    assert dataset_manifest_path(dataset['id']).read_bytes() == previous_manifest
     assert len(list((root / 'snapshots').glob('*.parquet'))) == 1
 
 

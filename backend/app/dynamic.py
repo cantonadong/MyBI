@@ -1,31 +1,25 @@
-from datetime import datetime, time, timedelta, timezone
-from contextlib import closing, contextmanager
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import json
 import logging
 import os
-import ssl
+import re
 import time as time_module
 from pathlib import Path
-from threading import Timer
-from tempfile import TemporaryDirectory
 from time import perf_counter
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
-import psycopg
-import psycopg2
-import psycopg2.sql
 import pyarrow.parquet as pq
-from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select, update
 
 from .db import SessionLocal
 from .connections import resolve_connection
-from .imports.delimited import Field as Column, TabularPreview, text_field
+from .imports.delimited import Field as Column, TabularPreview, _value, default_dimension, infer_type, text_field
 from .models import Dataset, DatasetSnapshot, DynamicSource
 from .settings import settings
 from .storage import atomic_copy, atomic_json, dataset_dir, rollback_files
@@ -84,6 +78,7 @@ class SourceRequest(SourceConfig):
     preview_id: str | None = None
     overrides: dict[str, str] = Field(default_factory=dict)
     renames: dict[str, str] = Field(default_factory=dict)
+    display_names: dict[str, str] = Field(default_factory=dict)
     formats: dict[str, dict] = Field(default_factory=dict)
     field_order: list[str] = Field(default_factory=list)
     confirm_conversion: bool = False
@@ -171,113 +166,71 @@ def execute(config: dict):
         return execute_query(config)
 
 
-@contextmanager
-def tls_options(config: dict):
-    options = {'sslmode': ('require' if config['trust_server_certificate'] else 'verify-full') if config['tls'] else 'disable'}
-    default_root = Path(os.getenv('APPDATA', str(Path.home()))) / 'postgresql/root.crt'
-    if os.name != 'nt' or options['sslmode'] != 'verify-full' or os.getenv('PGSSLROOTCERT') or default_root.is_file():
-        yield options
-        return
-    try:
-        roots = ssl.create_default_context().get_ca_certs(binary_form=True)
-        if not roots:
-            raise HTTPException(422, 'Windows 中没有可用的受信任根证书')
-        with TemporaryDirectory(prefix='mybi-tls-') as directory:
-            bundle = Path(directory) / 'roots.pem'
-            bundle.write_text(''.join(ssl.DER_cert_to_PEM_cert(root) for root in roots), encoding='ascii')
-            yield {**options, 'sslrootcert': str(bundle)}
-    except OSError:
-        raise HTTPException(422, '无法加载 Windows 信任证书，请检查系统证书设置') from None
-
-
-@contextmanager
-def database_connection(config: dict):
-    config = resolve_connection(config)
-    started = perf_counter()
-    try:
-        password = cipher().decrypt(config['password'].encode()).decode()
-    except (InvalidToken, ValueError, OSError):
-        raise HTTPException(422, '无法解密数据库密码，请重新填写密码或恢复原密钥')
-    redshift = config.get('redshift', False)
-    driver = psycopg2 if redshift else psycopg
-    query_sql = psycopg2.sql if redshift else sql
-    try:
-        with tls_options(config) as tls, closing(driver.connect(host=config['host'], port=config['port'], dbname=config['database'],
-                                    user=config['user'], password=password, connect_timeout=15,
-                                    **tls,
-                                    application_name='MyBI', **({} if redshift else {'options': f'-c statement_timeout={settings.dynamic_timeout_seconds * 1000}'}))) as connection:
-            if redshift:
-                connection.readonly = True
-            else:
-                connection.read_only = True
-            timer = Timer(settings.dynamic_timeout_seconds, connection.cancel)
-            timer.daemon = True
-            timer.start()
-            try:
-                if redshift:
-                    with connection.cursor() as cursor:
-                        cursor.execute(f'SET statement_timeout = {settings.dynamic_timeout_seconds * 1000}')
-                yield connection, query_sql, redshift
-            finally:
-                timer.cancel()
-                timer.join()
-    except (psycopg.Error, psycopg2.Error) as error:
-        message = (error.diag.message_primary if error.diag else None) or str(error)
-        if password:
-            message = message.replace(password, '***')
-        raise HTTPException(422, {'code': 'source_query_failed', 'message': message[:1500], 'duration_seconds': perf_counter() - started}) from None
-
-
 def execute_query(config: dict):
+    from .query_core import query_result, query_rows
+    if config.get('sync_requires_connection'):
+        raise HTTPException(422, '同步的数据源需要在本机配置数据库连接')
     started = perf_counter()
     try:
-        with database_connection(config) as (connection, query_sql, redshift):
-            if config['mode'] == 'sql':
-                statement = query_sql.SQL('SELECT * FROM ({}) AS mybi_source').format(query_sql.SQL(config['sql'].strip().rstrip(';')))
+        config = resolve_connection(config)
+        if config['mode'] == 'sql':
+            statement = config['sql']
+        else:
+            parameters = (config['schema_name'], config['object_name'])
+            if config.get('redshift') and config['mode'] == 'materialized_view':
+                check = "SELECT 'm' FROM svv_mv_info WHERE database_name = current_database() AND schema_name = %s AND name = %s"
+            elif config.get('redshift'):
+                check = "SELECT CASE UPPER(table_type) WHEN 'VIEW' THEN 'v' WHEN 'BASE TABLE' THEN 'r' WHEN 'EXTERNAL TABLE' THEN 'f' END FROM svv_tables WHERE table_catalog = current_database() AND table_schema = %s AND table_name = %s"
             else:
-                with connection.cursor() as cursor:
-                    if redshift and config['mode'] == 'materialized_view':
-                        cursor.execute("SELECT 'm' FROM svv_mv_info WHERE database_name = current_database() AND schema_name = %s AND name = %s", (config['schema_name'], config['object_name']))
-                    elif redshift:
-                        cursor.execute("SELECT CASE UPPER(table_type) WHEN 'VIEW' THEN 'v' WHEN 'BASE TABLE' THEN 'r' WHEN 'EXTERNAL TABLE' THEN 'f' END FROM svv_tables WHERE table_catalog = current_database() AND table_schema = %s AND table_name = %s", (config['schema_name'], config['object_name']))
+                check = 'SELECT c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s'
+            found = query_rows(config, check, parameters)
+            expected = {'table': {'r', 'p', 'f'}, 'view': {'v'}, 'materialized_view': {'m'}}[config['mode']]
+            if not found or found[0][0] not in expected:
+                raise HTTPException(422, '指定的表或视图不存在，或对象类型不匹配')
+            statement = 'SELECT * FROM ' + '.'.join('"' + config[key].replace('"', '""') + '"' for key in ('schema_name', 'object_name'))
+        with query_result(config, statement, typed=True) as (result, source):
+            names, oids = result['headers'], result['oids']
+            if not result['row_count']:
+                raise HTTPException(422, '查询结果为空，请检查 SQL 或数据源')
+            if not oids:
+                source = list(source)
+                for index, name in enumerate(names):
+                    kinds = set()
+                    for row in source:
+                        value = row[index]
+                        if value is None:
+                            continue
+                        kind = infer_type(_value(value), value, name)
+                        if kind in {'integer', 'number'} and not re.fullmatch(r'[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?', value):
+                            kind = 'string'
+                        kinds.add(kind)
+                    if kinds == {'integer'}:
+                        oid = 20
+                    elif kinds and kinds <= {'integer', 'number'}:
+                        oid = 1700
+                    elif kinds == {'date'}:
+                        oid = 1114 if any(row[index] is not None and len(row[index]) > 10 for row in source) else 1082
                     else:
-                        cursor.execute('SELECT c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s', (config['schema_name'], config['object_name']))
-                    found = cursor.fetchone()
-                    expected = {'table': {'r', 'p', 'f'}, 'view': {'v'}, 'materialized_view': {'m'}}[config['mode']]
-                    if not found or found[0] not in expected:
-                        raise HTTPException(422, '指定的表或视图不存在，或对象类型不匹配')
-                statement = query_sql.SQL('SELECT * FROM {}.{}').format(query_sql.Identifier(config['schema_name']), query_sql.Identifier(config['object_name']))
-            with connection.cursor(name='mybi_result') as cursor:
-                cursor.execute(statement)
-                first = cursor.fetchmany(1000)
-                if not first:
-                    raise HTTPException(422, '查询结果为空，请检查 SQL 或数据源')
-                names = [column.name for column in cursor.description]
-                oids = [column.type_code for column in cursor.description]
-                if any(not name for name in names) or len(set(names)) != len(names):
-                    raise HTTPException(422, '查询结果字段名称必须非空且唯一，请为重复字段设置别名')
-                rows, size = [], 0
-                batch = first
-                while batch:
-                    if perf_counter() - started > settings.dynamic_timeout_seconds:
-                        raise HTTPException(422, '查询超时，请缩小查询范围')
-                    for row in batch:
-                        size += sum(len(str(value).encode('utf-8')) if value is not None else 1 for value in row)
-                        if size > settings.max_upload_bytes or len(rows) >= settings.dynamic_max_rows:
-                            raise HTTPException(413, '查询结果超过数据集大小限制，请缩小查询范围')
-                        rows.append(list(row))
-                    batch = cursor.fetchmany(1000)
-                fields = [Column(name, 'string' if text_field(name) else 'integer' if oid in {20, 21, 23} else 'number' if oid in {700, 701, 1700} else 'date' if oid in {1082, 1114, 1184} else 'string') for name, oid in zip(names, oids)]
-                for row in rows:
-                    for index, value in enumerate(row):
-                        if value is not None and fields[index].type == 'string' and not isinstance(value, str):
-                            row[index] = json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value)
-                return TabularPreview(names, rows, fields), perf_counter() - started
+                        oid = 25
+                    oids.append(oid)
+            if any(not name for name in names) or len(set(names)) != len(names) or len(names) != len(oids):
+                raise HTTPException(422, '查询结果字段名称必须非空且唯一，请为重复字段设置别名')
+            fields = [Column(name, 'string' if text_field(name) else 'integer' if oid in {20, 21, 23} else 'number' if oid in {700, 701, 1700} else 'date' if oid in {1082, 1114, 1184} else 'string') for name, oid in zip(names, oids)]
+            rows = []
+            for row in source:
+                if perf_counter() - started > settings.dynamic_timeout_seconds:
+                    raise HTTPException(422, '查询超时，请缩小查询范围')
+                for index, value in enumerate(row):
+                    if value is None or fields[index].type == 'string':
+                        continue
+                    oid = oids[index]
+                    row[index] = int(value) if oid in {20, 21, 23} else Decimal(value) if oid == 1700 else float(value) if oid in {700, 701} else date.fromisoformat(value) if oid == 1082 else datetime.fromisoformat(value)
+                rows.append(row)
+            return default_dimension(TabularPreview(names, rows, fields)), perf_counter() - started
     except HTTPException as error:
         if not isinstance(error.detail, str):
             raise
         raise HTTPException(error.status_code, {'code': 'source_validation_failed', 'message': error.detail, 'duration_seconds': perf_counter() - started})
-
 
 
 def fingerprint(config: dict):

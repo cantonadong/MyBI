@@ -13,7 +13,7 @@ export function UserProfile({ onMessage }: { onMessage: (message: string) => voi
     api('/profile').then(value => { if (active) { setProfile(value); setSaved(JSON.stringify(value)); setLoaded(true); } }).catch(error => { if (active) setError(error.message); });
     return () => { active = false; };
   }, []);
-  return <section className="settings-card user-profile"><h3>{t('用户管理')}</h3><form onSubmit={async event => {
+  return <section id="settings-profile" className="settings-card user-profile"><h3>{t('用户管理')}</h3><form onSubmit={async event => {
     event.preventDefault(); setBusy(true); setError('');
     try { const value = await api('/profile', { ...json(profile), method: 'PUT' }); setProfile(value); setSaved(JSON.stringify(value)); onMessage(t('用户资料已保存')); }
     catch (error) { setError((error as Error).message); }

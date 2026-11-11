@@ -1,21 +1,23 @@
 import type { FieldFormats } from './fieldDisplay';
-import { t } from './i18n';
+import { formatChartField, titleCase } from './fieldDisplay';
+import { getChartLocale, t, translate } from './i18n';
 import type { ChartConfig } from './charts/registry';
 export type Filter = { sourceId?: string; datasetId?: string; field: string; op: string; value: unknown };
 export type FilterMode = 'global' | 'local' | 'both';
 export type AnnotationFields = Record<'start' | 'end' | 'label', string>;
 export type Annotation = { start: string | null; end: string | null; label: string };
-export type Dataset = { fingerprint?: string; annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
-export type Tile = { id: string; datasetId: string; config: ChartConfig; followFilterIds?: string[]; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
+export type Dataset = { owner?: string | null; updated_at?: string | null; storage_path?: string; local_id?: number; fingerprint?: string; annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
+export type Tile = { id: string; tabId?: string; datasetId: string; config: ChartConfig; followFilterIds?: string[]; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
+export type ReportTab = { id: string; name: string };
 export type CanvasGrid = { columns: number; rows: number };
 export type InsertSide = 'left' | 'right' | 'top' | 'bottom';
-export type Document = { showGuides?: boolean; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
-export type SavedReport = { id: string; name: string; owner?: string | null; updated_at?: string | null };
-export function chartTitle(config: ChartConfig, dataset?: Dataset): string {
-  if (config.type === 'filter' || config.autoTitle === false) return config.title || '';
+export type Document = { tabs?: ReportTab[]; showGuides?: boolean; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
+export type SavedReport = { id: string; pages?: number; published?: boolean; storage_path?: string; local_id?: number; fingerprint?: string; name: string; owner?: string | null; updated_at?: string | null };
+export function chartTitle(config: ChartConfig, dataset?: Dataset, filters: Filter[] = [], locale = getChartLocale()): string {
+  if (config.type === 'filter') return config.title || '';
   const label = (name: string) => {
     const text = dataset?.schema.find(field => field.name === name)?.display_name || name;
-    return text.split('_').map((word, index) => index && ['a', 'an', 'the', 'and', 'or', 'but', 'by', 'for', 'per', 'of', 'to', 'in', 'on', 'at', 'as', 'with', 'from', 'via', 'vs'].includes(word.toLowerCase()) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1)).join('_');
+    return titleCase(text);
   };
   const multiple = ['bar', 'line', 'area', 'mixed', 'candlestick'].includes(config.type);
   const metrics = (multiple ? config.measures || [config.measure, config.secondMeasure] : [config.measure, ...(config.type === 'scatter' ? [config.secondMeasure] : [])]).filter((field): field is string => !!field).map(field => {
@@ -23,13 +25,18 @@ export function chartTitle(config: ChartConfig, dataset?: Dataset): string {
     return label(field) + (method === 'sum' || ['scatter', 'histogram', 'boxplot', 'candlestick'].includes(config.type) ? '' : ` (${method})`);
   }).join(', ');
   const dimensions = (['kpi', 'gauge', 'histogram'].includes(config.type) ? [] : multiple && config.type !== 'candlestick' ? config.dimensions || [config.dimension] : [config.dimension]).filter((field): field is string => !!field).map(label).join(', ');
-  return metrics ? metrics + (dimensions ? ' by ' + dimensions : '') : config.title || '';
+  const title = config.autoTitle === false ? config.title || '' : metrics ? metrics + (dimensions ? ' by ' + dimensions : '') : config.title || '';
+  const selections = filters.flatMap(filter => {
+    const field = dataset?.schema.find(field => field.name === filter.field && ['string', 'date'].includes(field.type));
+    if (!field || (filter.datasetId && filter.datasetId !== dataset?.id) || !['in', 'date_between'].includes(filter.op)) return [];
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    if (!values.length || values.some(value => value === '' || value === undefined)) return [];
+    return [titleCase(field.display_name || field.name) + ': ' + values.map(value => value === null ? translate(locale, '（空）') : titleCase(formatChartField(value, dataset?.field_formats?.[field.name], locale))).join(filter.op === 'date_between' ? ' – ' : ', ')];
+  });
+  return [title, ...new Set(selections)].filter(Boolean).join(' · ');
 }
-export function chartSort(config: ChartConfig, dataset?: Dataset): string {
-  if (config.sort) return config.sort;
-  if (config.xAxisSort && config.xAxisSort !== 'none') return 'none';
-  const dimensions = config.dimensions || [config.dimension];
-  return dimensions.some(name => dataset?.schema.find(field => field.name === name)?.type === 'date' || /date|time|version|month|week|year|quarter|日期|时间|版本|月份|季度|年份/i.test(name || '')) ? 'none' : 'desc';
+export function chartSort(config: ChartConfig): string {
+  return config.sort || 'none';
 }
 export function filterMatchesChart(tile: Tile, filter: Tile, dataset?: Dataset): boolean {
   if (filter.config.type !== 'filter' || tile.datasetId !== filter.datasetId || !dataset) return false;
@@ -132,7 +139,15 @@ export function effectiveFilters(mode: FilterMode, global: Filter[], local: Filt
   const inherited = fields ? global.filter(filter => fields.includes(filter.field)) : global;
   return mode === 'global' ? inherited : mode === 'local' ? local : [...inherited, ...local];
 }
+export const publicReportAccess = document.documentElement.dataset.publicView === 'true';
+
 export async function api(path: string, options?: RequestInit) {
+  if (publicReportAccess) {
+    const reportId = window.location.pathname.match(/^\/view\/([^/]+)$/)?.[1];
+    if (!reportId) throw new Error(t('报表不存在或未发布'));
+    if (path === `/dashboards/${decodeURIComponent(reportId)}/published`) path = '/published';
+    path = '/public/' + reportId + path;
+  }
   const response = await fetch('/api' + path, options);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));

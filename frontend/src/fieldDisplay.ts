@@ -4,6 +4,10 @@ export type FieldFormats = Record<string, FieldFormat>;
 export const dateFormats = ['yyyy-MM-dd', 'MMM d', 'MMM d, yyyy', 'yyMMdd', 'yyyyMMdd', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy/MM/dd', 'yyyy-MM'];
 const numberFormats = new Map<string, Intl.NumberFormat>();
 
+export function titleCase(text: string): string {
+  return text.split(/([_\s]+)/).map((word, index) => index && ['a', 'an', 'the', 'and', 'or', 'but', 'by', 'for', 'per', 'of', 'to', 'in', 'on', 'at', 'as', 'with', 'from', 'via', 'vs'].includes(word.toLowerCase()) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1)).join('');
+}
+
 export function parseCategoryOrder(text: string): Map<string, number> {
   const entries = text.match(/"(?:[^"]|"")*"|[^\r\n\t,，;；、]+/g) || [];
   const names = [...new Set(entries.map(value => value.trim().replace(/^"(.*)"$/s, '$1').replace(/""/g, '"').trim()).filter(Boolean))];

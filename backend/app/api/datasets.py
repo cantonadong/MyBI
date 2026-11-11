@@ -5,8 +5,6 @@ from io import StringIO
 from pathlib import Path, PureWindowsPath
 import json
 import math
-import hashlib
-from functools import lru_cache
 from decimal import Decimal
 from threading import BoundedSemaphore, Timer
 from uuid import uuid4
@@ -19,6 +17,7 @@ import pyarrow.parquet as pq
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 from sqlalchemy import select, update, delete, or_
+from sqlalchemy.orm import object_session
 
 from ..db import SessionLocal
 from ..imports.delimited import parse_delimited, _value, infer_formats
@@ -26,7 +25,8 @@ from ..imports.excel import read_workbook
 from ..models import Dataset, DatasetSnapshot, Dashboard, PublishedDashboard, DynamicSource
 from ..settings import settings
 from ..expressions import compile_expression
-from ..storage import dataset_dir, write_dataset, rollback_files
+from ..storage import dataset_dir, dataset_manifest_path, write_dataset, rollback_files, resource_metadata
+from ..folder_sync import synchronize_folders
 
 router = APIRouter(prefix="/api")
 # ponytail: concurrency is bounded per process; use a shared worker queue for multi-process deployments.
@@ -102,7 +102,12 @@ def convert_preview(preview, overrides, renames=None, field_order=None, confirm_
                 if parsed is None:
                     return None
                 if type(parsed) in (int, float):
-                    value = parsed
+                    numeric = value.strip()
+                    value = Decimal(numeric.rstrip('%').replace(',', ''))
+                    if numeric.endswith('%'):
+                        parts = value.as_tuple()
+                        value = Decimal((parts.sign, parts.digits, parts.exponent - 2))
+                    return convert(value, kind, field_name)
             if type(value) is int:
                 return value
             if isinstance(value, str) and value.lstrip('+-').isdigit() and abs(int(value)) > 9007199254740991:
@@ -250,12 +255,6 @@ def snapshot_path(snapshot: DatasetSnapshot) -> str:
     return str(local) if not original.is_file() and local.is_file() else snapshot.storage_uri
 
 
-@lru_cache(maxsize=256)
-def file_fingerprint(path: str, size: int, modified: int) -> str:
-    with open(path, 'rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
-
-
 def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
     arrow_schema = pq.read_schema(snapshot_path(snapshot))
     metadata = arrow_schema.metadata or {}
@@ -263,21 +262,16 @@ def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
     for field in snapshot.schema_json:
         kind = ('integer' if pa.types.is_integer(arrow_schema.field(field['name']).type) else 'decimal') if field['type'] in {'number', 'integer'} else 'text'
         formats[field['name']] = field.get('display', {'kind': kind, 'format': 'number', 'decimals': 0 if kind == 'integer' else 1})
-    result = {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None, 'storage_path': f'datasets/{dataset.id}/dataset.json'}
+    result = {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None}
     result['annotation_fields'] = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
+    result.update(resource_metadata('dataset', dataset.id, object_session(dataset)))
+    result['updated_at'] = result['updated_at'] or result['data_as_of']
+    result['storage_path'] = f"datasets/{dataset.id}/{result['fingerprint']}.json"
     with SessionLocal() as session:
         source = session.get(DynamicSource, dataset.id)
         if source:
-            from ..dynamic import utc_iso, fingerprint
-            try:
-                result['fingerprint'] = fingerprint(source.config)
-            except HTTPException:
-                result['fingerprint'] = None
+            from ..dynamic import utc_iso
             result['dynamic'] = {'duration_seconds': source.duration_seconds, 'last_run_at': utc_iso(source.last_run_at), 'next_run_at': utc_iso(source.next_run_at), 'last_error': source.last_error, 'schedule': source.schedule, 'refreshing': bool(source.lease_token)}
-        else:
-            path = snapshot_path(snapshot)
-            stat = Path(path).stat()
-            result['fingerprint'] = file_fingerprint(path, stat.st_size, stat.st_mtime_ns)
     return result
 
 
@@ -342,7 +336,7 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
                     raise HTTPException(409, '数据集已被修改，请重新打开字段配置后再试')
             else:
                 dataset.current_snapshot_id = snapshot.id
-            files.enter_context(rollback_files([dataset_dir(identity) / 'dataset.json']))
+            files.enter_context(rollback_files([dataset_manifest_path(identity, session)]))
             if on_publish:
                 on_publish(session, dataset, snapshot, files)
             write_dataset(identity, session)
@@ -406,6 +400,7 @@ def latest_dataset():
 
 @router.get('/datasets/saved')
 def saved_datasets():
+    synchronize_folders()
     with SessionLocal() as session:
         ids = set()
         for document in session.scalars(select(Dashboard.document)):
@@ -417,13 +412,16 @@ def saved_datasets():
 
 @router.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: str) -> dict:
+    synchronize_folders()
     return dataset_payload(*get_pair(dataset_id))
 
 
 @router.get('/datasets')
 def list_datasets():
+    synchronize_folders()
     with SessionLocal() as session:
-        return [dataset_payload(item, session.get(DatasetSnapshot, item.current_snapshot_id)) for item in session.scalars(select(Dataset)) if item.current_snapshot_id]
+        items = [dataset_payload(item, session.get(DatasetSnapshot, item.current_snapshot_id)) for item in session.scalars(select(Dataset)) if item.current_snapshot_id]
+        return sorted(items, key=lambda item: item['updated_at'] or '', reverse=True)
 
 
 @router.delete('/datasets/{dataset_id}', status_code=204)
@@ -593,7 +591,7 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
         result = session.execute(update(Dataset).where(Dataset.id == dataset_id, Dataset.version == request.version, Dataset.current_snapshot_id == snapshot.id).values(version=Dataset.version + 1, name=request.name.strip() if request.name is not None else dataset.name))
         if result.rowcount != 1:
             raise HTTPException(409, 'Dataset has changed; reopen field settings and try again')
-        files.enter_context(rollback_files([dataset_dir(dataset_id) / 'dataset.json']))
+        files.enter_context(rollback_files([dataset_manifest_path(dataset_id, session)]))
         session.get(DatasetSnapshot, snapshot.id).schema_json = schema_json
         source = session.get(DynamicSource, dataset_id)
         if source and request.annotation_fields is not None:
@@ -606,8 +604,8 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
             field_settings['formats'] = formats
             field_settings['confirm_conversion'] = field_settings['confirm_conversion'] or request.confirm_conversion
             source.config = {**source.config, 'field_settings': field_settings}
-        result = dataset_payload(session.get(Dataset, dataset_id), session.get(DatasetSnapshot, snapshot.id))
         write_dataset(dataset_id, session)
+        result = dataset_payload(session.get(Dataset, dataset_id), session.get(DatasetSnapshot, snapshot.id))
     return result
 
 
@@ -736,7 +734,31 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
             order_field += '_'
         source = f'(SELECT *, row_number() OVER () AS {quote(order_field)} FROM {source})'
         order = f' ORDER BY MIN({quote(order_field)})'
-    sql = f"SELECT {projection} FROM {source}" + (" WHERE " + " AND ".join(conditions) if conditions else "") + group + order + " LIMIT ? OFFSET ?"
+    legend_order_field = None
+    if request.aggregation and request.second_dimension and request.chart_type in {'bar', 'line', 'area', 'mixed'}:
+        legend_order_field = '__dw_legend_order'
+        while legend_order_field in allowed:
+            legend_order_field += '_'
+        row_order_field = legend_order_field + '_row'
+        while row_order_field in allowed:
+            row_order_field += '_'
+        source = f'(SELECT *, row_number() OVER () AS {quote(row_order_field)} FROM {source})'
+        projection += f', MIN(MIN({quote(row_order_field)})) OVER (PARTITION BY {quote(request.second_dimension)}) AS {quote(legend_order_field)}'
+    result_limit = ' LIMIT ? OFFSET ?'
+    qualify = ''
+    axis_dimensions = request.dimensions or ([request.dimension] if request.dimension else [])
+    if request.aggregation and axis_dimensions and request.second_dimension and request.second_dimension not in axis_dimensions:
+        if request.sort in {'asc', 'desc'}:
+            method = request.metric_aggregations.get(sort_measure, request.aggregation)
+            value = compile_expression(request.metric_expression, allowed) if sort_measure == request.measure and request.metric_expression else quote(sort_measure)
+            aggregate = f'COUNT(DISTINCT {value})' if method == 'count_distinct' else f'{method.upper()}({value})'
+            top_order = f'{aggregate} {request.sort.upper()} NULLS LAST'
+        else:
+            top_order = f'MIN({quote(order_field)})'
+        partition = quote(request.second_dimension)
+        qualify = f' QUALIFY ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY {top_order}, {",".join(map(quote, axis_dimensions))}) <= ?'
+        result_limit = ' OFFSET ?'
+    sql = f"SELECT {projection} FROM {source}" + (" WHERE " + " AND ".join(conditions) if conditions else "") + group + qualify + order + result_limit
     if request.chart_type == 'histogram':
         if not request.measure:
             raise HTTPException(422, 'Histogram requires a numeric measure')
@@ -763,7 +785,12 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
         finally:
             timer.cancel()
             timer.join()
+    legend_order = []
+    if legend_order_field:
+        legend_order = list(dict.fromkeys(row[request.second_dimension] for row in sorted(rows, key=lambda row: row[legend_order_field])))
+        for row in rows:
+            del row[legend_order_field]
     if request.chart_type == 'annotation':
         fields = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
         rows = annotation_rows(request.fields, [[row[name] for name in request.fields] for row in rows], fields)
-    return {"snapshot_id": snapshot.id, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "is_sampled": False, "scope": {"limit": request.limit}, "columns": request.fields, "rows": rows}
+    return {"snapshot_id": snapshot.id, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "is_sampled": False, "scope": {"limit": request.limit}, "columns": request.fields, "rows": rows, "legend_order": legend_order}

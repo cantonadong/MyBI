@@ -25,6 +25,7 @@ function notify() {
   syncManagerLocale();
 }
 function syncManagerLocale() {
+  if (document.documentElement.dataset.publicView === 'true') return;
   // The native service manager cannot read browser localStorage.
   void fetch('/api/profile/locale', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: getLocale() }) }).catch(() => {});
 }

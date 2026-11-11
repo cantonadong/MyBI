@@ -1,4 +1,4 @@
-# MyBI v1.2
+# MyBI v1.3
 
 A local visual report builder for Windows, with Simplified Chinese and English UI.
 
@@ -8,8 +8,8 @@ Two packages are available for Windows 10/11 x64. Both include the Rust + Slint 
 
 | Package | Runtime dependencies |
 | --- | --- |
-| `MyBI-v1.2-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
-| `MyBI-v1.2-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
+| `MyBI-v1.3-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
+| `MyBI-v1.3-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
 
 ```powershell
 py -3.13 -m venv .venv
@@ -35,6 +35,10 @@ Reports and profile settings are stored in `data-workbench.db`; imported data sn
 - Change language, chart palette and display defaults in Settings.
 
 Published report links require the service to remain running. Local mode is single-user. Server mode supports a shared administrator login; it does not provide separate user roles.
+
+**Public report access** in Settings starts a separate read-only listener on a configurable port (default 8001). It detects the public IPv4 address using HTTPS requests to ipify; an optional domain overrides the generated link address. Publish a report, then use **Copy link** in the reports list. Only published reports and their associated data are exposed; editing, connection settings and comments remain local. Firewall access and router port forwarding may be required. Detecting an outbound public IP does not bypass CGNAT or configure DNS, HTTPS certificates or port forwarding.
+
+Reports support multiple named tabs. Switching from a data source to field configuration reads a fresh preview and reports added/removed fields. Numeric-only inputs default their first field to a text dimension. Percentage names are recognized without case sensitivity. Chart labels support automatic units and positions; candlestick values use their individual coordinates. **Show first X** also limits the category axis for category charts.
 
 ## Connected datasets and files
 
@@ -79,12 +83,12 @@ Dynamic queries default to 300 seconds, 1,000,000 rows and the existing 100 MiB 
 
 ## Build from source
 
-Use Windows x64, Python 3.13, Node.js, Rust's `stable-x86_64-pc-windows-msvc` toolchain, and Visual Studio C++ Build Tools with the Windows 10 SDK. Create `.venv`, install the backend with `.venv\Scripts\python.exe -m pip install ./backend`, and run `npm.cmd --prefix frontend ci`.
+Use Windows x64, Python 3.13, Node.js, Rust's `stable-x86_64-pc-windows-gnu` toolchain and LLVM-MinGW. Create `.venv`, install the backend with `.venv\Scripts\python.exe -m pip install ./backend`, and run `npm.cmd --prefix frontend ci`.
 
-Run `./scripts/build.ps1` from a PowerShell development terminal to build the frontend and Rust manager. This script is a developer build tool, not a runtime dependency. Alternatively, build with `npm.cmd --prefix frontend run build`, then `cargo +stable-x86_64-pc-windows-msvc build --manifest-path desktop/Cargo.toml --release --locked` and copy `desktop/target/release/MyBI.exe` to the project root. Add `-Package` to the build script to create both Windows ZIPs and `SHA256SUMS.txt` under `artifacts`. Packaging reuses an existing bundled `runtime` when present; otherwise it collects Python and backend dependencies from the local environment for the portable variant only.
+Run `./scripts/build.ps1 -LlvmBin <LLVM-MinGW-bin>` from a PowerShell development terminal to build the frontend, shared MyQuery core and Rust manager. This script is a developer build tool, not a runtime dependency. The current script uses `stable-x86_64-pc-windows-gnu`; the sibling `../MyQuery` workspace must provide its shared-core build, or a prebuilt `myquery_core.dll` must be available with an appropriate `-MyQueryRoot`. Release packages include this DLL. Add `-Package` to create both Windows ZIPs and `SHA256SUMS.txt` under `artifacts`. Packaging reuses an existing bundled `runtime` when present; otherwise it collects Python and backend dependencies from the local environment for the portable variant only.
 
 The manager starts Python directly and keeps stdout/stderr in `data/logs`, without a shell. It verifies the project path and Python process before stopping a service. The optional developer script `scripts/build-selfsigned.ps1` builds the same Rust manager and signs a local copy; it does not add the certificate to a trust store. Rebuilding or self-signing does not establish publisher trust or guarantee acceptance by endpoint security.
 
 After pulling updates on another computer, rerun `npm.cmd --prefix frontend ci` and `./scripts/build.ps1` to refresh both the web build and `MyBI.exe`. Commit `frontend/package-lock.json` and `desktop/Cargo.lock` with dependency changes. Generated executables, `frontend/dist`, runtimes, databases and imported snapshots are local files and are not synchronized by Git.
 
-Tests are not run by the build script. v1.2 was built and packaged without running the test suite.
+Tests are not run by the build script. v1.3 was built and packaged without running the test suite.

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Float
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Float, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -9,6 +9,18 @@ from .db import Base
 
 def new_id() -> str:
     return str(uuid4())
+
+
+class ResourceIdentity(Base):
+    __tablename__ = 'resource_identities'
+    __table_args__ = (UniqueConstraint('kind', 'resource_id'), {'sqlite_autoincrement': True})
+    local_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    resource_id: Mapped[str] = mapped_column(String(36))
+    fingerprint: Mapped[str] = mapped_column(String(128), unique=True)
+    file_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Dataset(Base):
