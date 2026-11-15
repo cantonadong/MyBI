@@ -1,3 +1,4 @@
+import { confirmAction } from './confirmAction';
 import { useEffect, useState } from 'react';
 import { api, json } from './dashboard';
 import { t, useLanguage } from './i18n';
@@ -28,7 +29,7 @@ export function ConnectionsSettings({ onMessage }: { onMessage: (text: string) =
     finally { setBusy(false); }
   };
   const run = async (action: 'save' | 'check' | 'delete') => {
-    if (action === 'delete' && !window.confirm(t('确定删除连接“{0}”？', form.name))) return;
+    if (action === 'delete' && !await confirmAction(t('确定删除连接“{0}”？', form.name))) return;
     setBusy(true); setError('');
     try {
       if (action === 'check') {

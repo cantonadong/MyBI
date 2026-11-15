@@ -169,13 +169,23 @@ def create_dashboard(body: SaveDashboard):
     return result
 
 @router.get('/{dashboard_id}')
-def get_dashboard(dashboard_id: str):
+def get_dashboard(dashboard_id: str, include_datasets: bool = False):
     synchronize_folders()
     with SessionLocal() as session:
         item = session.get(Dashboard, dashboard_id)
         if not item:
             raise HTTPException(404, 'Dashboard not found')
-        return payload(item)
+        result = payload(item)
+        if include_datasets:
+            ids = dict.fromkeys([chart['datasetId'] for chart in item.document.get('charts', []) if chart.get('datasetId')] + [source['id'] for source in item.document.get('datasets', []) if source.get('id')])
+            result['datasets'] = []
+            for source_id in ids:
+                try:
+                    result['datasets'].append(dataset_payload(*get_pair(source_id)))
+                except HTTPException as error:
+                    if error.status_code not in (404, 410):
+                        raise
+        return result
 
 @router.put('/{dashboard_id}')
 def save_dashboard(dashboard_id: str, body: SaveDashboard):

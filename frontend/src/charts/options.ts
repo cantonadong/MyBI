@@ -100,11 +100,13 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   const categoryText = (value: unknown) => categoryLabels.get(String(value)) ?? categoryName(value);
   const originalHeatmapY = c.type === 'heatmap' ? [...new Set(rows.map(row => categoryName(row[c.secondDimension || ''])))] : undefined;
   if (c.xAxisSort && c.xAxisSort !== 'none' && c.dimension && ['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'candlestick'].includes(c.type)) {
+    const originalOrder = new Map([...new Set(rows.map(row => row[c.dimension!]))].map((value, index) => [value, index]));
     const ranks = parseCategoryOrder(c.xAxisOrderText || '');
     const dimension = c.dimension;
     const rank = (value: unknown) => ranks.get(categoryText(value).trim()) ?? ranks.get(formatField(value, c.fieldFormats?.[dimension]).trim()) ?? ranks.size;
     const collator = new Intl.Collator(locale, { numeric: true, sensitivity: 'base' });
     rows = [...rows].sort((a, b) => {
+      if (c.xAxisSort === 'reverse') return originalOrder.get(b[dimension])! - originalOrder.get(a[dimension])!;
       if (c.xAxisSort === 'custom') return rank(a[dimension]) - rank(b[dimension]);
       if (a[dimension] == null || b[dimension] == null) return a[dimension] == null ? b[dimension] == null ? 0 : 1 : -1;
       const difference = typeof a[dimension] === 'number' && typeof b[dimension] === 'number' ? Number(a[dimension]) - Number(b[dimension]) : collator.compare(categoryText(a[dimension]), categoryText(b[dimension]));

@@ -67,7 +67,7 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
       </>}
     {['bar', 'line', 'area', 'mixed', 'waterfall', 'boxplot', 'heatmap', 'candlestick'].includes(c.type) && <>
       <label>{t('X 轴排序')}<select aria-label={t('X 轴排序')} value={c.xAxisSort || 'none'} onChange={event => onChange({ xAxisSort: event.target.value as ChartConfig['xAxisSort'] })}>
-        <option value="none">{t('默认（数据顺序）')}</option><option value="asc">{t('升序')}</option><option value="desc">{t('降序')}</option><option value="custom">{t('自定义')}</option>
+        <option value="none">{t('默认（数据顺序）')}</option><option value="reverse">{t('反向原始顺序')}</option><option value="asc">{t('升序')}</option><option value="desc">{t('降序')}</option><option value="custom">{t('自定义')}</option>
       </select></label>
       {c.xAxisSort === 'custom' && <label>{t('自定义类别顺序')}<textarea aria-label={t('自定义类别顺序')} rows={5} value={c.xAxisOrderText || ''} placeholder={t('粘贴类别名称，每行一个，或用逗号、Tab 分隔')} onChange={event => onChange({ xAxisOrderText: event.target.value })} /><small>{t('按文本顺序排列，未列出的类别保留原顺序放在末尾。')}</small></label>}
     </>}
