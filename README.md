@@ -79,7 +79,7 @@ Generate a key with `python -c "from cryptography.fernet import Fernet; print(Fe
 
 Persistent volumes: `postgres-data` stores metadata, `resource-data` stores managed dataset/report files, and the original `snapshot-data` volume retains legacy snapshots. Back up all three volumes and `.env` together. Do not use `docker compose down -v` when retaining data. `DATASET_ROOT` and `REPORT_ROOT` allow non-container server installations to choose persistent directories. `MYBI_SCHEDULER=false` disables the API's embedded scheduler when running `python -m app.scheduler` separately. Database leases prevent overlapping refreshes of the same dataset across workers. Start a single API process for initial schema creation before adding workers.
 
-Dynamic queries default to 300 seconds, 1,000,000 rows and the existing 100 MiB dataset input size limit. Configure `DYNAMIC_TIMEOUT_SECONDS`, `DYNAMIC_MAX_ROWS` and `MAX_UPLOAD_BYTES` identically for API and scheduler. Do not grant untrusted users access to connection configuration: connected-source administrators can reach database hosts accessible to the server.
+Dynamic queries default to 3600 seconds, 1,000,000 rows and the existing 100 MiB dataset input size limit. Configure `DYNAMIC_TIMEOUT_SECONDS`, `DYNAMIC_MAX_ROWS` and `MAX_UPLOAD_BYTES` identically for API and scheduler. Do not grant untrusted users access to connection configuration: connected-source administrators can reach database hosts accessible to the server.
 
 ## Build from source
 

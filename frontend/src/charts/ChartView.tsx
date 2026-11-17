@@ -5,7 +5,7 @@ import { ChartConfig } from './registry';
 import { optionFor, Row } from './options';
 import { chartColors } from './palettes';
 import { formatChartField as fieldValue, metricFormat, type FieldFormat } from '../fieldDisplay';
-export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange, onPageSizeChange }: { config: ChartConfig; rows: Row[]; page?: number; pageSize?: number; onPageChange?: (page: number) => void; onPageSizeChange?: (size: number) => void }) {
+export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange }: { config: ChartConfig; rows: Row[]; page?: number; pageSize?: number; onPageChange?: (page: number) => void }) {
   const { locale: defaultLocale } = useChartLanguage();
   const locale = config.locale || defaultLocale;
   const ref = useRef<HTMLDivElement>(null), [error, setError] = useState('');
@@ -14,18 +14,6 @@ export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange,
   const t = (text: string, ...values: unknown[]) => translate(latest.current.config.locale || getChartLocale(), text, values);
   const formatField = (value: unknown, format?: FieldFormat) => fieldValue(value, format, locale);
   const updateChart = useRef<() => void>();
-  const tableScroll = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const element = tableScroll.current;
-    if (config.type !== 'table' || !element || !onPageSizeChange) return;
-    const measure = () => {
-      const headerHeight = element.querySelector('thead')?.getBoundingClientRect().height || 35;
-      const rowHeight = element.querySelector('tbody tr')?.getBoundingClientRect().height || 35;
-      onPageSizeChange(Math.max(1, Math.min(10000, Math.floor((element.clientHeight - headerHeight) / rowHeight))));
-    };
-    const observer = new ResizeObserver(measure); observer.observe(element); measure();
-    return () => observer.disconnect();
-  }, [config.type, rows, onPageSizeChange]);
   useEffect(() => {
     if (!ref.current || ['kpi', 'table'].includes(config.type)) return;
     let chart: echarts.ECharts | undefined;
@@ -68,6 +56,6 @@ export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange,
     catch (e) { setError((e as Error).message); }
   }, [config, rows, locale]);
   if (config.type === 'kpi') { const value = rows[0]?.[config.measure || '']; return <div className="metric" style={{ color: chartColors(config)[0] }}><div className="metric-value">{value === null || value === undefined ? '—' : formatField(value, metricFormat(config, config.measure || ''))}</div><div className="metric-title">{config.title}</div></div>; }
-  if (config.type === 'table') { const fields = Object.keys(rows[0] || {}); return <div className="table-component"><div ref={tableScroll} className="table-scroll"><table><thead><tr>{fields.map(f => <th key={f}>{f}</th>)}</tr></thead><tbody>{rows.map((row, i) => <tr key={i}>{fields.map(f => <td key={f}>{formatField(row[f], config.fieldFormats?.[f])}</td>)}</tr>)}</tbody></table></div><div className="table-pagination"><button disabled={!page} onClick={() => onPageChange?.(page - 1)}>{t("上一页")}</button><span> {t("第")} {page + 1} {t("页")} </span><button disabled={rows.length < pageSize} onClick={() => onPageChange?.(page + 1)}>{t("下一页")}</button></div></div>; }
+  if (config.type === 'table') { const fields = Object.keys(rows[0] || {}); return <div className="table-component"><div className="table-scroll"><table><thead><tr>{fields.map(f => <th key={f}>{f}</th>)}</tr></thead><tbody>{rows.map((row, i) => <tr key={i}>{fields.map(f => <td key={f}>{formatField(row[f], config.fieldFormats?.[f])}</td>)}</tr>)}</tbody></table></div><div className="table-pagination"><button disabled={!page} onClick={() => onPageChange?.(page - 1)}>{t("上一页")}</button><span> {t("第")} {page + 1} {t("页")} </span><button disabled={rows.length < pageSize || !!config.limit && (page + 1) * pageSize >= config.limit} onClick={() => onPageChange?.(page + 1)}>{t("下一页")}</button></div></div>; }
   return <>{error && <div role="alert">{error}</div>}<div ref={ref} className="chart-view" aria-label={`${config.title || config.type} chart`} /></>;
 }

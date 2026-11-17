@@ -686,5 +686,11 @@
   "请先在设置中填写对外 IP 或域名地址": "Enter the public IP or domain address in Settings first",
   "端口不能与本地管理端口 8000 相同": "The port must differ from the local management port 8000",
   "请输入有效的 IP 或域名地址，可包含协议和端口": "Enter a valid IP or domain address, optionally including protocol and port",
-  "无法启动或保存只读服务，请检查端口占用和文件权限": "Could not start or save the read-only service. Check port availability and file permissions."
+  "无法启动或保存只读服务，请检查端口占用和文件权限": "Could not start or save the read-only service. Check port availability and file permissions.",
+  "自定义日期格式": "Custom date format",
+  "最大结果数": "Maximum results",
+  "必选": "Required",
+  "查询已取消": "Query cancelled",
+  "查询": "Query",
+  "更新": "Update"
 }

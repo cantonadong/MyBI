@@ -1,4 +1,5 @@
 const paths: Record<string, string> = {
+  add: 'M12 4v16M4 12h16',
   remove: 'M3 3 21 21M3 21 21 3',
   image: 'M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M8 7h.01',
   copy: 'M9 8h11v13H9zM5 16H3V3h11v2',

@@ -17,7 +17,7 @@ class Settings:
     report_root: Path = Path(os.getenv('REPORT_ROOT', str(PROJECT_ROOT / 'reports')))
     secret_key_file: Path = Path(os.getenv('SECRET_KEY_FILE', str(PROJECT_ROOT / 'data/secret.key')))
     dynamic_max_rows: int = int(os.getenv('DYNAMIC_MAX_ROWS', '1000000'))
-    dynamic_timeout_seconds: int = int(os.getenv('DYNAMIC_TIMEOUT_SECONDS', '300'))
+    dynamic_timeout_seconds: int = int(os.getenv('DYNAMIC_TIMEOUT_SECONDS', '3600'))
 
 
 settings = Settings()

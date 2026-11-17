@@ -59,6 +59,8 @@ def _value(raw: str) -> object:
 
 
 def text_field(name: str) -> bool:
+    if 'bucket' in name.lower():
+        return True
     name = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name)
     return bool(re.search(r'(?:^|[^a-z])(?:version|ver)(?:$|[^a-z])|版本', name, re.IGNORECASE))
 

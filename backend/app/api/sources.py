@@ -1,4 +1,8 @@
 from datetime import date
+import asyncio
+from threading import Event
+from starlette.concurrency import run_in_threadpool
+from ..query_core import query_cancel
 import json
 import os
 from pathlib import Path
@@ -52,24 +56,50 @@ def myquery_connections(request: Request):
         raise HTTPException(422, '无法读取 MyQuery 连接配置') from None
 
 
+async def query_response(request, config, annotation_order, staged=False):
+    cancellation = Event()
+    def work():
+        token = query_cancel.set(cancellation)
+        try:
+            preview, duration = execute(config)
+            preview = annotation_preview(preview, annotation_order)
+            if cancellation.is_set():
+                raise HTTPException(499, '查询已取消')
+            result = {**preview_payload(preview), 'duration_seconds': duration}
+            if staged:
+                result['preview_id'] = stage_source_preview(preview, config, duration)
+                if cancellation.is_set():
+                    discard_source_preview(result['preview_id'])
+                    raise HTTPException(499, '查询已取消')
+            else:
+                result['validated'] = True
+            return result
+        finally:
+            query_cancel.reset(token)
+    task = asyncio.create_task(run_in_threadpool(work))
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                cancellation.set()
+            await asyncio.wait({task}, timeout=0.1)
+        return await task
+    finally:
+        cancellation.set()
+
+
 @router.post('/sources/validate')
-def validate_source(body: SourceConfig):
-    preview, duration = execute(stored_config(body))
-    preview = annotation_preview(preview, body.annotation_order)
-    return {**preview_payload(preview), 'duration_seconds': duration, 'validated': True}
+async def validate_source(body: SourceConfig, request: Request):
+    return await query_response(request, stored_config(body), body.annotation_order)
 
 
 @router.post('/sources/preview')
-def preview_source(body: SourceConfig, dataset_id: str | None = None):
+async def preview_source(body: SourceConfig, request: Request, dataset_id: str | None = None):
     with SessionLocal() as session:
         source = session.get(DynamicSource, dataset_id) if dataset_id else None
         if dataset_id and not source:
             raise HTTPException(404, '动态数据源不存在')
         config = resolve_connection(stored_config(body, source.config if source else None))
-    preview, duration = execute(config)
-    preview = annotation_preview(preview, body.annotation_order)
-    preview_id = stage_source_preview(preview, config, duration)
-    return {**preview_payload(preview), 'duration_seconds': duration, 'preview_id': preview_id}
+    return await query_response(request, config, body.annotation_order, staged=True)
 
 
 @router.delete('/sources/previews/{preview_id}', status_code=204)
@@ -78,15 +108,13 @@ def discard_preview(preview_id: str):
 
 
 @router.post('/datasets/{dataset_id}/dynamic/validate')
-def validate_existing(dataset_id: str, body: SourceConfig):
+async def validate_existing(dataset_id: str, body: SourceConfig, request: Request):
     with SessionLocal() as session:
         source = session.get(DynamicSource, dataset_id)
         if not source:
             raise HTTPException(404, '动态数据源不存在')
         config = stored_config(body, source.config)
-    preview, duration = execute(config)
-    preview = annotation_preview(preview, body.annotation_order)
-    return {**preview_payload(preview), 'duration_seconds': duration, 'validated': True}
+    return await query_response(request, config, body.annotation_order)
 
 
 @router.post('/sources', status_code=201)

@@ -38,7 +38,7 @@ class DisplayUpdate(BaseModel):
     format: Literal['number', 'percent']
     decimals: int = Field(ge=0, le=4, strict=True)
     rounding: Literal['halfExpand', 'trunc'] = 'halfExpand'
-    dateFormat: Literal['yyyy-MM-dd', 'MMM d', 'MMM d, yyyy', 'yyMMdd', 'yyyyMMdd', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy/MM/dd', 'yyyy-MM'] | None = None
+    dateFormat: str | None = Field(default=None, min_length=1, max_length=100)
     valueLabels: dict[str, str] | None = None
 
     @model_validator(mode='after')
@@ -229,7 +229,7 @@ class ViewQuery(BaseModel):
     snapshot_id: str | None = None
     fields: list[str]
     filters: list[Filter] = []
-    limit: int = Field(default=100, ge=1, le=settings.max_result_rows)
+    limit: int | None = Field(default=100, ge=1, le=settings.max_result_rows)
     offset: int = Field(default=0, ge=0)
     dimension: str | None = None
     dimensions: list[str] = Field(default_factory=list, max_length=32)
@@ -648,6 +648,8 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
             conditions.append(f"{column} = ?"); parameters.append(item.value)
         elif item.op == "contains":
             conditions.append(f"CAST({column} AS VARCHAR) ILIKE ?"); parameters.append(f"%{item.value}%")
+        elif item.op == "in" and isinstance(item.value, list) and not item.value:
+            conditions.append("FALSE")
         elif item.op == "in" and isinstance(item.value, list) and item.value:
             values = [value for value in item.value if value is not None]
             parts = [f"{column} IN ({','.join('?' for _ in values)})"] if values else []
@@ -744,10 +746,10 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
             row_order_field += '_'
         source = f'(SELECT *, row_number() OVER () AS {quote(row_order_field)} FROM {source})'
         projection += f', MIN(MIN({quote(row_order_field)})) OVER (PARTITION BY {quote(request.second_dimension)}) AS {quote(legend_order_field)}'
-    result_limit = ' LIMIT ? OFFSET ?'
+    result_limit = ' LIMIT ? OFFSET ?' if request.limit is not None else ' OFFSET ?'
     qualify = ''
     axis_dimensions = request.dimensions or ([request.dimension] if request.dimension else [])
-    if request.aggregation and axis_dimensions and request.second_dimension and request.second_dimension not in axis_dimensions:
+    if request.limit is not None and request.aggregation and axis_dimensions and request.second_dimension and request.second_dimension not in axis_dimensions:
         if request.sort in {'asc', 'desc'}:
             method = request.metric_aggregations.get(sort_measure, request.aggregation)
             value = compile_expression(request.metric_expression, allowed) if sort_measure == request.measure and request.metric_expression else quote(sort_measure)
@@ -771,7 +773,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
           SELECT lo + grid.i * CASE WHEN hi=lo THEN 1 ELSE (hi-lo)/n END AS __bin,
             coalesce(counts.freq, 0) AS __count FROM stats
           CROSS JOIN LATERAL range(n::BIGINT) AS grid(i) LEFT JOIN counts ON counts.idx=grid.i
-          WHERE lo IS NOT NULL ORDER BY __bin LIMIT ? OFFSET ?'''
+          WHERE lo IS NOT NULL ORDER BY __bin{result_limit}'''
     with query_slots, duckdb.connect() as connection:
         connection.execute("SET memory_limit='512MB'")
         connection.execute('SET threads=2')
@@ -779,7 +781,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
         timer.daemon = True
         timer.start()
         try:
-            cursor = connection.execute(sql, [snapshot_path(snapshot), *parameters, request.limit, request.offset])
+            cursor = connection.execute(sql, [snapshot_path(snapshot), *parameters, *([request.limit] if request.limit is not None else []), request.offset])
             columns = [item[0] for item in cursor.description]
             rows = [dict(zip(columns, values)) for values in cursor.fetchall()]
         finally:

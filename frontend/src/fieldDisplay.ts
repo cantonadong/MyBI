@@ -1,7 +1,7 @@
 import { getChartLocale, getLocale } from './i18n';
 export type FieldFormat = { kind: 'integer' | 'decimal' | 'text'; format: 'number' | 'percent'; decimals: number; rounding?: 'halfExpand' | 'trunc'; dateFormat?: string; valueLabels?: Record<string, string> };
 export type FieldFormats = Record<string, FieldFormat>;
-export const dateFormats = ['yyyy-MM-dd', 'MMM d', 'MMM d, yyyy', 'yyMMdd', 'yyyyMMdd', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy/MM/dd', 'yyyy-MM'];
+export const dateFormats = ['yyyy-MM-dd', 'MMM d', 'MMM d, yyyy', 'yyMMdd', 'yyyyMMdd', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy/MM/dd', 'yyyy-MM', 'mmm yy'];
 const numberFormats = new Map<string, Intl.NumberFormat>();
 
 export function titleCase(text: string): string {
@@ -30,8 +30,8 @@ export function formatField(value: unknown, format?: FieldFormat, locale = getLo
   if (format?.dateFormat && typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
     const date = new Date(value.slice(0, 10) + 'T00:00:00Z');
     if (!Number.isNaN(date.getTime())) {
-      const parts: Record<string, string> = { yyyy: value.slice(0, 4), yy: value.slice(2, 4), MM: value.slice(5, 7), dd: value.slice(8, 10), d: String(date.getUTCDate()), MMM: new Intl.DateTimeFormat(locale, { month: 'short', timeZone: 'UTC' }).format(date) };
-      return format.dateFormat.replace(/yyyy|MMM|yy|MM|dd|d/g, token => parts[token]);
+      const parts: Record<string, string> = { yyyy: value.slice(0, 4), yy: value.slice(2, 4), MM: value.slice(5, 7), dd: value.slice(8, 10), d: String(date.getUTCDate()), MMM: new Intl.DateTimeFormat(locale, { month: 'short', timeZone: 'UTC' }).format(date), MMMM: new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(date), M: String(date.getUTCMonth() + 1), ddd: new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(date), dddd: new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' }).format(date) };
+      return format.dateFormat.replace(/'[^']*'|"[^"]*"|yyyy|MMMM|mmmm|MMM|mmm|yy|MM|mm|dddd|ddd|dd|d|M|m/g, token => token.startsWith("'") || token.startsWith('"') ? token.slice(1, -1) : parts[/^m+$/.test(token) ? token.toUpperCase() : token]);
     }
   }
   if (typeof value !== 'number' || format?.kind === 'text') return String(value);

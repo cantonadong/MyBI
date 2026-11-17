@@ -76,12 +76,13 @@ export function controlFilters(tile: Tile, dataset?: Dataset): Filter[] {
   if (c.type !== 'filter' || !dataset) return [];
   const dimensions = new Set(dataset.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => field.name));
   const scope = { sourceId: tile.id, datasetId: tile.datasetId };
-  if (c.filterStyle === 'date-range' || c.filterStyle === 'date-last') {
+  const dateField = dataset.schema.some(field => field.name === c.dimension && field.type === 'date');
+  if (dateField && (c.filterStyle === 'date-range' || c.filterStyle === 'date-last')) {
     const range = c.filterStyle === 'date-last' ? lastDateRange(c.filterRange?.[1] || '', c.filterLastCount, c.filterLastUnit) : c.filterRange;
-    return c.dimension && dimensions.has(c.dimension) && range?.every(Boolean) && range[0] <= range[1] ? [{ ...scope, field: c.dimension, op: 'date_between', value: range }] : [];
+    return c.dimension && range?.every(Boolean) && range[0] <= range[1] ? [{ ...scope, field: c.dimension, op: 'date_between', value: range }] : c.filterRequired && c.dimension ? [{ ...scope, field: c.dimension, op: 'in', value: [] }] : [];
   }
   const fields = c.filterStyle === 'cascade' ? c.filterFields || [] : [c.dimension || ''];
-  return fields.flatMap(field => dimensions.has(field) && c.filterValues?.[field]?.length ? [{ ...scope, field, op: 'in', value: c.filterValues[field] }] : []);
+  return fields.flatMap(field => dimensions.has(field) && (c.filterValues?.[field]?.length || c.filterRequired) ? [{ ...scope, field, op: 'in', value: c.filterValues?.[field] || [] }] : []);
 }
 export function gridFor(doc: Document): CanvasGrid {
   return doc.grid || { columns: 12, rows: Math.max(20, ...doc.charts.map(tile => tile.y + tile.h)) };

@@ -1,5 +1,7 @@
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from contextlib import contextmanager
+from threading import BoundedSemaphore
 import hashlib
 import json
 import logging
@@ -160,14 +162,30 @@ def safe_config(source: DynamicSource):
             'last_run_at': utc_iso(source.last_run_at), 'next_run_at': utc_iso(source.next_run_at)}
 
 
+dynamic_slots = BoundedSemaphore(settings.max_concurrent_queries)
+
+
+@contextmanager
+def dynamic_slot():
+    from .query_core import query_cancel
+    cancellation = query_cancel.get()
+    while not dynamic_slots.acquire(timeout=0.1):
+        if cancellation and cancellation.is_set():
+            raise HTTPException(499, '查询已取消')
+    try:
+        yield
+    finally:
+        dynamic_slots.release()
+
+
 def execute(config: dict):
-    from .api.datasets import query_slots
-    with query_slots:
+    with dynamic_slot():
         return execute_query(config)
 
 
 def execute_query(config: dict):
-    from .query_core import query_result, query_rows
+    from .query_core import query_cancel, query_result, query_rows
+    cancellation = query_cancel.get()
     if config.get('sync_requires_connection'):
         raise HTTPException(422, '同步的数据源需要在本机配置数据库连接')
     started = perf_counter()
@@ -218,6 +236,8 @@ def execute_query(config: dict):
             fields = [Column(name, 'string' if text_field(name) else 'integer' if oid in {20, 21, 23} else 'number' if oid in {700, 701, 1700} else 'date' if oid in {1082, 1114, 1184} else 'string') for name, oid in zip(names, oids)]
             rows = []
             for row in source:
+                if cancellation and cancellation.is_set():
+                    raise HTTPException(499, '查询已取消')
                 if perf_counter() - started > settings.dynamic_timeout_seconds:
                     raise HTTPException(422, '查询超时，请缩小查询范围')
                 for index, value in enumerate(row):
@@ -343,8 +363,7 @@ def release(dataset_id: str, token: str, **values):
 
 
 def refresh(dataset_id: str, force=False, due_only=False, scheduled_after=None):
-    from .api.datasets import query_slots
-    with query_slots:
+    with dynamic_slot():
         return refresh_locked(dataset_id, force, due_only, scheduled_after)
 
 
