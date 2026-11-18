@@ -55,6 +55,21 @@ class DynamicSource(Base):
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+class ScheduledQuery(Base):
+    __tablename__ = 'scheduled_queries'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    config: Mapped[dict] = mapped_column(JSON)
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
 class SavedConnection(Base):
     __tablename__ = 'saved_connections'
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

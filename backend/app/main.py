@@ -17,6 +17,7 @@ from threading import Event, Thread
 import base64
 import secrets
 from .api.sources import router as sources_router
+from .api.scheduled_queries import router as scheduled_queries_router
 from .storage import materialize_existing
 from .connections import router as connections_router, migrate_connections
 from .shared_data import synchronize_connections
@@ -81,6 +82,7 @@ app.include_router(datasets_router)
 app.include_router(dashboards_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
+app.include_router(scheduled_queries_router)
 app.include_router(connections_router)
 app.include_router(public_access.router)
 

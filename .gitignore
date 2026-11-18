@@ -6,6 +6,7 @@
 **/*.py[cod]
 **/node_modules/
 **/dist/
+!frontend/dist/
 **/build/
 **/*.egg-info/
 **/*.tsbuildinfo
@@ -14,8 +15,6 @@ frontend/vite.config.ts.timestamp-*
 *.db
 *.db-*
 *.log
-MyBI.exe
-myquery_core.dll
 artifacts/
 data/
 datasets/

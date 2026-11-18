@@ -8,6 +8,7 @@ from sqlalchemy import or_, select
 from .db import SessionLocal
 from .dynamic import Schedule, refresh, utc_now
 from .models import Dashboard, DynamicSource
+from .api.scheduled_queries import due_ids, run_query
 
 logger = logging.getLogger('mybi.scheduler')
 
@@ -58,6 +59,13 @@ def run(stop: Event):
                     refresh(dataset_id, force=True, due_only=dataset_id not in report_ids, scheduled_after=report_ids.get(dataset_id))
                 except Exception:
                     logger.warning('Scheduled refresh failed for dataset %s; see dataset execution status.', dataset_id)
+            for query_id in due_ids(utc_now()):
+                if stop.is_set():
+                    break
+                try:
+                    run_query(query_id, due_only=True)
+                except Exception:
+                    logger.warning('Scheduled query %s was skipped; it may be running elsewhere.', query_id)
         except Exception:
             logger.exception('Unable to poll scheduled datasets')
         stop.wait(15)

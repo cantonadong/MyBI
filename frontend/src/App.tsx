@@ -25,6 +25,7 @@ import { PublicAccessSettings, copyPublicReportLink } from './PublicAccessSettin
 import { CommentsPanel } from './CommentsPanel';
 import { DynamicSource, executionError, queryDuration, DynamicSourceConfig, DynamicSourcePreview, DynamicSourceCache } from './DynamicSource';
 import { ConnectionsSettings } from './ConnectionsSettings';
+import { ScheduledQueries } from './ScheduledQueries';
 import { TimezoneSelect } from './TimezoneSelect';
 import { DatasetManager } from './DatasetManager';
 import { chartColors, chartPalettes, randomChartColors } from './charts/palettes';
@@ -117,7 +118,6 @@ export default function App() {
   const setMessage = (text: string) => setToast(previous => ({ text, id: previous.id + 1 }));
   const [dashboards, setDashboards] = useState<SavedReport[]>([]), [datasets, setDatasets] = useState<Dataset[]>([]);
   const [importedIds, setImportedIds] = useState<string[]>([]);
-  const [datasetNumbers, setDatasetNumbers] = useState<Record<string, number>>({});
   const workspaceScroll = useRef<HTMLDivElement>(null);
   const [viewportRows, setViewportRows] = useState(6);
   const [chartsScrolling, setChartsScrolling] = useState(false);
@@ -233,13 +233,6 @@ export default function App() {
     document.addEventListener('keydown', preventSelectAll, true);
     return () => document.removeEventListener('keydown', preventSelectAll, true);
   }, []);
-  useEffect(() => {
-    setDatasetNumbers(previous => {
-      const next = { ...previous };
-      for (const id of importedIds) if (!(id in next)) next[id] = Object.keys(next).length + 1;
-      return Object.keys(next).length === Object.keys(previous).length ? previous : next;
-    });
-  }, [importedIds]);
   useEffect(() => {
     const viewport = workspaceScroll.current;
     const resize = () => { if (viewport?.clientHeight) setViewportRows(Math.max(5, Math.floor((viewport.clientHeight - 12) / 68))); };
@@ -667,7 +660,7 @@ export default function App() {
   };
   const resetReport = () => {
     ++session.current; setOpeningReport(false); history.current = []; future.current = []; setRestoredDraft(false); setPublishedView(false); setPreviewMode(false); setCommentChart('');
-    setDoc({ charts: [], filters: [], datasets: [] }); setActiveTabId(''); setDatasets([]); setImportedIds([]); setDatasetNumbers({});
+    setDoc({ charts: [], filters: [], datasets: [] }); setActiveTabId(''); setDatasets([]); setImportedIds([]);
     setName(nameWithTime(t('未命名报表'))); setId(''); setVersion(1); setDirty(false); setSelected(''); setActiveDatasetId('');
     setDeleted(null); setCopied(null); setPasteArmed(false); insertionRef.current = null; setInsertion(null);
     setSaveError(''); setPreviewMode(false); setShowSettings(false); setShowReports(false); setPanel('charts'); setMessage('');
@@ -855,9 +848,9 @@ export default function App() {
     {deleted && deleted.session === session.current && <div className="delete-toast" data-testid="delete-toast" role="status"><span>{t("图表已删除")}</span><button onClick={restoreDeleted}>{t("撤销")}</button><small>{t("5 秒内可恢复")}</small></div>}
 
     {showSettings && <main className="settings-page" aria-label={t("设置")}><nav className="settings-nav" aria-label={t('设置导航')}>{[
-        ['profile', '用户管理'], ['public-access', '报表对外访问'], ['connections', '连接关联'], ['theme', '主题配色'], ['formats', '数据格式'], ['display', '报表显示'], ['save', '保存'], ['language', '语言'],
+        ['profile', '用户管理'], ['public-access', '报表对外访问'], ['connections', '连接关联'], ['scheduled', '定时查询'], ['theme', '主题配色'], ['formats', '数据格式'], ['display', '报表显示'], ['save', '保存'], ['language', '语言'],
       ].map(([id, label]) => <a key={id} href={'#settings-' + id} aria-current={settingsSection === id ? 'location' : undefined} onClick={event => { event.preventDefault(); setSettingsSection(id); }}>{t(label)}</a>)}</nav><div className="settings-content">
-      <header className="settings-heading"><h2>{t("设置")}</h2><button onClick={() => { setShowSettings(false); navigateTo(showReports ? '/reports' : panel === 'history' ? '/datasets' : editorPath); }}>{t("返回画布")}</button></header>{settingsSection === 'public-access' && <PublicAccessSettings onMessage={setMessage} />}{settingsSection === 'profile' && <UserProfile onMessage={setMessage} />}{settingsSection === 'connections' && <ConnectionsSettings onMessage={setMessage} />}{settingsSection === 'theme' && <section id="settings-theme" className="settings-card"><h3>{t('\u4e3b\u9898\u914d\u8272')}</h3><div className="chart-palette">
+      <header className="settings-heading"><h2>{t("设置")}</h2><button onClick={() => { setShowSettings(false); navigateTo(showReports ? '/reports' : panel === 'history' ? '/datasets' : editorPath); }}>{t("返回画布")}</button></header>{settingsSection === 'public-access' && <PublicAccessSettings onMessage={setMessage} />}{settingsSection === 'profile' && <UserProfile onMessage={setMessage} />}{settingsSection === 'connections' && <ConnectionsSettings onMessage={setMessage} />}{settingsSection === 'scheduled' && <ScheduledQueries onMessage={setMessage} />}{settingsSection === 'theme' && <section id="settings-theme" className="settings-card"><h3>{t('\u4e3b\u9898\u914d\u8272')}</h3><div className="chart-palette">
       <div className="chart-palette-options">{[...chartPalettes, { id: 'random', label: '\u968f\u673a', colors: randomChartColors('preview').slice(0, 6) }].map(palette => <button type="button" key={palette.id} aria-label={t(palette.label)} aria-pressed={theme.palette === palette.id} className={theme.palette === palette.id ? 'selected' : ''} onClick={() => updateTheme({ palette: palette.id })}><span className="chart-palette-name">{t(palette.label)}</span><span className="chart-palette-strip">{palette.colors.map(color => <span key={color} style={{ backgroundColor: color }} />)}</span></button>)}</div>
       <details className="chart-palette-custom"><summary>{t('\u81ea\u5b9a\u4e49\u914d\u8272')}</summary><div className="chart-palette-colors">{chartColors({ type: 'bar', ...theme }).slice(0, 6).map((color, index) => <input key={index} type="color" aria-label={t('\u914d\u8272') + ' ' + (index + 1)} value={color} onChange={event => { const colors = chartColors({ type: 'bar', ...theme }).slice(0, 6); colors[index] = event.target.value; updateTheme({ palette: 'custom', colors }); }} />)}</div></details>
       <p>{t('\u968f\u673a\u914d\u8272\u5728\u540c\u4e00\u7ec4\u4ef6\u5185\u6bcf 64 \u4e2a\u989c\u8272\u5faa\u73af\uff0c\u8fde\u7eed 64 \u4e2a\u4e0d\u91cd\u590d')}</p></div></section>}
