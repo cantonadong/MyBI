@@ -295,7 +295,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       if (visibleLanes) {
         option.grid.top = Math.max(Number(option.grid.top) || 25, 8 + visibleLanes * laneHeight);
         option.series.push({
-          type: 'custom', silent: true, clip: false, z: 0, tooltip: { show: false },
+          type: 'custom', silent: false, clip: false, z: 0, tooltip: { show: true, trigger: 'item', renderMode: 'richText', borderRadius: 6, formatter: (params: any) => { const span = spans[params.dataIndex]; return [span.label, `${span.start || '…'} – ${span.end || '…'}`, span.comment].filter(Boolean).join('\n'); } },
           data: spans.map(span => [span.from, span.to]), encode: { x: [0, 1], y: [], tooltip: [] },
           renderItem: (params: any, api: any) => {
             const span = spans[params.dataIndex], grid = params.coordSys;

@@ -36,7 +36,7 @@ query_slots = BoundedSemaphore(settings.max_concurrent_queries)
 class DisplayUpdate(BaseModel):
     kind: Literal['integer', 'decimal', 'text'] | None = None
     format: Literal['number', 'percent']
-    decimals: int = Field(ge=0, le=4, strict=True)
+    decimals: int = Field(ge=0, le=8, strict=True)
     rounding: Literal['halfExpand', 'trunc'] = 'halfExpand'
     dateFormat: str | None = Field(default=None, min_length=1, max_length=100)
     valueLabels: dict[str, str] | None = None
@@ -65,6 +65,7 @@ class PasteImport(BaseModel):
     confirm_conversion: bool = False
     annotation_fields: dict[str, str] = Field(default_factory=dict)
     annotation_order: list[str] = Field(default_factory=list)
+    annotation_merge: bool = False
 
 
 def convert_preview(preview, overrides, renames=None, field_order=None, confirm_conversion=False, formats=None, annotation_fields=None):
@@ -171,8 +172,8 @@ def annotation_date(value):
 
 
 def annotation_rows(headers, rows, fields):
-    if set(fields) != {'start', 'end', 'label'} or len(headers) != 3 or set(fields.values()) != set(headers):
-        raise HTTPException(422, 'Annotation 必须包含开始日期、结束日期、标签三列')
+    if not {'start', 'end', 'label'} <= set(fields) or not set(fields) <= {'start', 'end', 'label', 'comment'} or len(fields) != len(set(fields.values())) or set(fields.values()) != set(headers):
+        raise HTTPException(422, 'Annotation 必须包含标签、开始日期、结束日期，可选补充说明列')
     indices = {role: headers.index(name) for role, name in fields.items()}
     result = []
     for row in rows:
@@ -191,7 +192,7 @@ def annotation_rows(headers, rows, fields):
             raise HTTPException(422, 'Annotation 标签不能为空')
         if item['start'] and item['end'] and item['start'] > item['end']:
             raise HTTPException(422, 'Annotation 开始日期不能晚于结束日期')
-        result.append({**item, 'label': str(label)})
+        result.append({**item, 'label': str(label), **({'comment': str(row[indices['comment']] or '')} if 'comment' in indices else {})})
     return result
 
 
@@ -199,6 +200,8 @@ def annotation_preview(preview, order):
     from ..imports.delimited import Field as Column, TabularPreview, infer_type
     if not order:
         return preview
+    order = order[:min(4, len(preview.headers))]
+    preview = TabularPreview(preview.headers[:4], [row[:4] for row in preview.rows], preview.fields[:4], [row[:4] for row in preview.raw_rows] if preview.raw_rows is not None else None)
     fields = dict(zip(order, preview.headers))
     normalized = annotation_rows(preview.headers, preview.rows, fields)
     rows = [list(row) for row in preview.rows]
@@ -209,10 +212,10 @@ def annotation_preview(preview, order):
     for index, field in enumerate(preview.fields):
         value = rows[0][index]
         kind = infer_type(_value(value), value, field.name) if isinstance(value, str) else field.type
-        if field.name == fields['label']:
+        if field.name in {fields['label'], fields.get('comment')}:
             kind = 'string'
             for row, item in zip(rows, normalized):
-                row[index] = item['label']
+                row[index] = item['label' if field.name == fields['label'] else 'comment']
         if field.name in {fields['start'], fields['end']}:
             kind = 'date'
         columns.append(Column(field.name, kind))
@@ -263,6 +266,7 @@ def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
         kind = ('integer' if pa.types.is_integer(arrow_schema.field(field['name']).type) else 'decimal') if field['type'] in {'number', 'integer'} else 'text'
         formats[field['name']] = field.get('display', {'kind': kind, 'format': 'number', 'decimals': 0 if kind == 'integer' else 1})
     result = {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None}
+    result['annotation_merge'] = any(field.get('annotation_merge') for field in snapshot.schema_json)
     result['annotation_fields'] = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
     result.update(resource_metadata('dataset', dataset.id, object_session(dataset)))
     result['updated_at'] = result['updated_at'] or result['data_as_of']
@@ -287,7 +291,7 @@ def table_for_preview(preview):
     return pa.table(arrays)
 
 
-def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None, identity: str | None = None, on_publish=None, annotation_fields: dict | None = None) -> dict:
+def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None, identity: str | None = None, on_publish=None, annotation_fields: dict | None = None, annotation_merge: bool | None = None) -> dict:
     previous_fields = {}
     if dataset_id:
         existing, previous = get_pair(dataset_id)
@@ -296,8 +300,26 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
         previous_fields = {field['name']: field for field in previous.schema_json}
     if annotation_fields is None:
         annotation_fields = {field['annotation_role']: field['name'] for field in previous_fields.values() if field.get('annotation_role')}
+    if annotation_merge is None:
+        annotation_merge = any(field.get('annotation_merge') for field in previous_fields.values())
     if annotation_fields:
-        annotation_rows(preview.headers, preview.rows, annotation_fields)
+        normalized = annotation_rows(preview.headers, preview.rows, annotation_fields)
+        if annotation_merge:
+            from ..imports.delimited import TabularPreview
+            merged = []
+            for item in sorted(normalized, key=lambda item: (item['label'], item['start'] or '', item['end'] or '9999-12-31')):
+                previous_item = merged[-1] if merged else None
+                adjacent = previous_item and (previous_item['end'] is None or item['start'] is None or (date.fromisoformat(item['start']) - date.fromisoformat(previous_item['end'])).days <= 1)
+                if previous_item and previous_item['label'] == item['label'] and adjacent:
+                    previous_item['end'] = None if previous_item['end'] is None or item['end'] is None else max(previous_item['end'], item['end'])
+                    if 'comment' in annotation_fields:
+                        previous_item['comment'] = '\n'.join(dict.fromkeys(value for value in [previous_item.get('comment'), item.get('comment')] if value))
+                else:
+                    merged.append(dict(item))
+            roles = {name: role for role, name in annotation_fields.items()}
+            rows = [[date.fromisoformat(item[roles[name]]) if roles[name] in {'start', 'end'} and item[roles[name]] else item[roles[name]] for name in preview.headers] for item in merged]
+            preview = TabularPreview(preview.headers, rows, preview.fields)
+
     displays = infer_formats(preview)
     types = {field.name: field.type for field in preview.fields}
     for field in preview.fields:
@@ -327,7 +349,7 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
                 session.add(dataset); session.flush()
             schema = []
             for field in preview.fields:
-                schema.append({'name': field.name, 'type': field.type, 'display': displays[field.name], 'display_name': previous_fields.get(field.name, {}).get('display_name', field.name), 'annotation_role': next((role for role, name in annotation_fields.items() if name == field.name), None)})
+                schema.append({'name': field.name, 'type': field.type, 'display': displays[field.name], 'display_name': previous_fields.get(field.name, {}).get('display_name', field.name), 'annotation_merge': annotation_merge, 'annotation_role': next((role for role, name in annotation_fields.items() if name == field.name), None)})
             snapshot = DatasetSnapshot(id=snapshot_id, dataset_id=dataset.id, schema_json=schema, row_count=len(preview.rows), storage_uri=str(published.resolve()))
             session.add(snapshot); session.flush()
             if dataset_id:
@@ -352,11 +374,11 @@ def import_paste(request: PasteImport) -> dict:
     if len(request.text.encode('utf-8')) > settings.max_upload_bytes:
         raise HTTPException(413, 'Input is too large')
     preview = annotation_preview(parse_delimited(request.text, request.delimiter, request.has_header), request.annotation_order)
-    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats, request.annotation_fields), formats=request.formats, dataset_id=request.dataset_id, version=request.version, annotation_fields=request.annotation_fields)
+    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats, request.annotation_fields), formats=request.formats, dataset_id=request.dataset_id, version=request.version, annotation_fields=request.annotation_fields, annotation_merge=request.annotation_merge)
 
 
 @router.post("/imports/files", status_code=201)
-async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False), annotation_fields: str = Form('{}'), annotation_order: str = Form('[]')) -> dict:
+async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False), annotation_fields: str = Form('{}'), annotation_order: str = Form('[]'), annotation_merge: bool = Form(False)) -> dict:
     suffix = (file.filename or "").lower().rsplit(".", 1)[-1]
     content = await file.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
@@ -377,7 +399,7 @@ async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet
     displays = json.loads(formats)
     parsed = annotation_preview(parsed, TypeAdapter(list[str]).validate_json(annotation_order))
     annotations = TypeAdapter(dict[str, str]).validate_json(annotation_fields)
-    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays, annotations), 'upload', file.filename, displays, dataset_id, version, annotation_fields=annotations)
+    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays, annotations), 'upload', file.filename, displays, dataset_id, version, annotation_fields=annotations, annotation_merge=annotation_merge)
 
 
 def get_pair(dataset_id: str):
@@ -495,7 +517,7 @@ def dataset_source(dataset_id: str) -> dict:
 class FieldFormatUpdate(BaseModel):
     field: str = Field(min_length=1)
     format: Literal['number', 'percent']
-    decimals: int = Field(ge=0, le=4, strict=True)
+    decimals: int = Field(ge=0, le=8, strict=True)
     version: int = Field(ge=1)
 
 
@@ -507,6 +529,7 @@ class FieldsUpdate(BaseModel):
     field_order: list[str] = Field(default_factory=list)
     display_names: dict[str, str] = Field(default_factory=dict)
     annotation_fields: dict[str, str] | None = None
+    annotation_merge: bool | None = None
     confirm_conversion: bool = False
 
 
@@ -561,7 +584,7 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
         formats[name] = {'kind': 'integer' if kind == 'integer' else 'decimal' if kind == 'number' else 'text', 'format': 'number', 'decimals': 0 if kind == 'integer' else 1}
     for name, display in request.formats.items():
         formats[name] = {**formats[name], **display.model_dump(exclude_none=True)}
-    if len(kept_fields) < len(fields):
+    if len(kept_fields) < len(fields) or annotation_fields and request.annotation_merge is not None:
         with query_slots:
             table = pq.read_table(snapshot_path(snapshot), columns=kept_fields)
         metadata = table.schema.metadata or {}
@@ -580,8 +603,8 @@ def update_fields(dataset_id: str, request: FieldsUpdate) -> dict:
                     'formats': displays,
                     'confirm_conversion': previous.get('confirm_conversion', False) or request.confirm_conversion,
                 }
-                source.config = {**source.config, 'annotation_fields': annotation_fields, 'field_settings': settings}
-        return publish(request.name.strip() if request.name is not None else dataset.name, preview, metadata.get(b'import_method', b'paste').decode(), metadata.get(b'filename', b'').decode() or None, displays, dataset_id, request.version, on_publish=on_publish, annotation_fields=annotation_fields)
+                source.config = {**source.config, 'annotation_fields': annotation_fields, 'annotation_merge': request.annotation_merge, 'field_settings': settings}
+        return publish(request.name.strip() if request.name is not None else dataset.name, preview, metadata.get(b'import_method', b'paste').decode(), metadata.get(b'filename', b'').decode() or None, displays, dataset_id, request.version, on_publish=on_publish, annotation_fields=annotation_fields, annotation_merge=request.annotation_merge)
     schema_json = [{**field, 'type': types[field['name']], 'display': formats[field['name']], 'display_name': request.display_names.get(field['name'], field.get('display_name', field['name'])).strip()} for field in snapshot.schema_json]
     schema_json = [{**field, 'annotation_role': next((role for role, name in annotation_fields.items() if name == field['name']), None)} for field in schema_json]
     if request.field_order:

@@ -37,7 +37,8 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
   if (c.type === 'table') return null;
   const hierarchy = ['tree', 'treemap', 'sunburst'].includes(c.type);
   const axis = c.horizontal ? t("X 轴") : t("Y 轴");
-  const nextMetric = metrics.find(f => !measures.includes(f.name)) || metrics[0];
+  const lastMetricIndex = metrics.findIndex(field => field.name === measures[measures.length - 1]);
+  const nextMetric = metrics[lastMetricIndex + 1] || metrics[0];
   return <>
     {!['kpi', 'filter'].includes(c.type) && <fieldset className="axis-settings"><legend>{t('数据标签设置')}</legend>
       {!['table', 'gauge'].includes(c.type) && <label>{t('数据标签显示位置')}<select aria-label={t('数据标签显示位置')} value={c.labelPosition || 'auto'} onChange={event => onChange({ labelPosition: event.target.value as ChartConfig['labelPosition'] })}>

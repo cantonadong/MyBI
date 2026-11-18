@@ -36,7 +36,7 @@ export function formatField(value: unknown, format?: FieldFormat, locale = getLo
   }
   if (typeof value !== 'number' || format?.kind === 'text') return String(value);
   if (!Number.isFinite(value)) return '—';
-  const decimals = format?.kind === 'integer' ? 0 : format ? Math.max(1, Math.min(4, format.decimals)) : Number.isInteger(value) ? 0 : 1;
+  const decimals = format?.kind === 'integer' ? 0 : format ? Math.max(1, Math.min(8, format.decimals)) : Number.isInteger(value) ? 0 : 1;
   const style = format?.format === 'percent' ? 'percent' : 'decimal', roundingMode = format?.rounding || 'halfExpand', key = locale + style + decimals + roundingMode;
   const options: Intl.NumberFormatOptions & { roundingMode: string } = { style, minimumFractionDigits: decimals, maximumFractionDigits: decimals, roundingMode };
   if (!numberFormats.has(key)) numberFormats.set(key, new Intl.NumberFormat(locale, options));

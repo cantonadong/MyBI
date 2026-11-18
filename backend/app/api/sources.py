@@ -134,7 +134,7 @@ def create_source(body: SourceRequest):
                                   duration_seconds=duration, last_run_at=utc_now(), next_run_at=next_run(schedule)))
         files.enter_context(rollback_files([root / f'{day}.parquet', root / f'{day}.json']))
         save_cache(snapshot, execution_config, schedule, duration, day)
-    result = publish(body.name.strip(), preview, 'dynamic', formats=body.formats, identity=identity, on_publish=on_publish, annotation_fields=body.annotation_fields)
+    result = publish(body.name.strip(), preview, 'dynamic', formats=body.formats, identity=identity, on_publish=on_publish, annotation_fields=body.annotation_fields, annotation_merge=body.annotation_merge)
     if body.preview_id:
         discard_source_preview(body.preview_id)
     return {**dataset_payload(*get_pair(result['id'])), 'duration_seconds': duration, 'cache_hit': False}
@@ -181,7 +181,7 @@ def save_source(dataset_id: str, body: SourceRequest):
                 source.lease_token, source.lease_until = None, None
                 files.enter_context(rollback_files([root / f'{day}.parquet', root / f'{day}.json']))
                 save_cache(snapshot, execution_config, schedule, duration, day)
-            result = publish(body.name.strip(), preview, 'dynamic', dataset_id=dataset_id, version=body.version, formats=body.formats, on_publish=on_publish, annotation_fields=body.annotation_fields)
+            result = publish(body.name.strip(), preview, 'dynamic', dataset_id=dataset_id, version=body.version, formats=body.formats, on_publish=on_publish, annotation_fields=body.annotation_fields, annotation_merge=body.annotation_merge)
             discard_source_preview(body.preview_id)
             return result
         with ExitStack() as files, SessionLocal.begin() as session:

@@ -75,6 +75,7 @@ class SourceConfig(BaseModel):
 
 
 class SourceRequest(SourceConfig):
+    annotation_merge: bool = False
     name: str = Field(min_length=1, max_length=255)
     version: int | None = Field(default=None, ge=1)
     preview_id: str | None = None
@@ -150,8 +151,10 @@ def stored_config(request: SourceConfig, previous: dict | None = None):
         config['field_settings'] = previous['field_settings']
     if isinstance(request, SourceRequest) and request.annotation_fields is not None:
         config['annotation_fields'] = request.annotation_fields
+        config['annotation_merge'] = request.annotation_merge
     elif previous and previous.get('annotation_fields'):
         config['annotation_fields'] = previous['annotation_fields']
+        config['annotation_merge'] = previous.get('annotation_merge', False)
     return config
 
 
@@ -259,7 +262,7 @@ def fingerprint(config: dict):
 
 
 def preview_fingerprint(config: dict):
-    config = {key: value for key, value in resolve_connection(config).items() if key not in {'field_settings', 'annotation_fields'}}
+    config = {key: value for key, value in resolve_connection(config).items() if key not in {'field_settings', 'annotation_fields', 'annotation_merge'}}
     for key in (('schema_name', 'object_name') if config['mode'] == 'sql' else ('sql',)):
         config.pop(key, None)
     return fingerprint(config)
@@ -399,7 +402,7 @@ def refresh_locked(dataset_id: str, force=False, due_only=False, scheduled_after
                 raise HTTPException(409, '数据集正在刷新或任务已被其他服务处理，请稍后再试')
             files.enter_context(rollback_files([root / f'{day}.parquet', root / f'{day}.json']))
             save_cache(snapshot, execution_config, schedule, duration, day)
-        publish(dataset.name, preview, 'dynamic', dataset_id=dataset_id, version=dataset.version, on_publish=on_publish, annotation_fields=config.get('annotation_fields'))
+        publish(dataset.name, preview, 'dynamic', dataset_id=dataset_id, version=dataset.version, on_publish=on_publish, annotation_fields=config.get('annotation_fields'), annotation_merge=config.get('annotation_merge', False))
         return {**dataset_payload(*get_pair(dataset_id)), 'cache_hit': False, 'duration_seconds': duration}
     except Exception as error:
         detail = error.detail if isinstance(error, HTTPException) else '数据集刷新失败，请检查服务日志和存储权限'

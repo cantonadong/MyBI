@@ -692,5 +692,16 @@
   "必选": "Required",
   "查询已取消": "Query cancelled",
   "查询": "Query",
-  "更新": "Update"
+  "更新": "Update",
+  "自动合并相邻区间": "Merge adjacent intervals",
+  "已关联数据集": "Linked dataset",
+  "执行": "Run",
+  "执行中…": "Running…",
+  "缓存结果：{0} 行": "Cached result: {0} rows",
+  "查看结果": "View results",
+  "补充说明": "Comment",
+  "本地执行时间：{0}": "Local run time: {0}",
+  "Annotation 必须包含标签、开始日期、结束日期，可选补充说明列": "Annotation requires label, start and end dates, with an optional comment column",
+  "设置标签、开始日期、结束日期及可选 comment；多余列保存时舍弃，日期允许 NULL。": "Set label, start date, end date and optional comment. Extra columns are discarded on save; NULL dates are unbounded.",
+  "结果更新时间": "Result updated"
 }
