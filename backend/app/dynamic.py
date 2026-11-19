@@ -209,7 +209,7 @@ def execute_query(config: dict):
             if not found or found[0][0] not in expected:
                 raise HTTPException(422, '指定的表或视图不存在，或对象类型不匹配')
             statement = 'SELECT * FROM ' + '.'.join('"' + config[key].replace('"', '""') + '"' for key in ('schema_name', 'object_name'))
-        with query_result(config, statement, typed=True) as (result, source):
+        with query_result(config, statement, typed=True, read_only=config['mode'] != 'sql') as (result, source):  # SQL runs as written (reads or refresh writes); object reads stay read-only
             names, oids = result['headers'], result['oids']
             if not result['row_count']:
                 raise HTTPException(422, '查询结果为空，请检查 SQL 或数据源')

@@ -55,10 +55,10 @@ def publish_dashboard(dashboard_id: str, body: PublishDashboard):
         if not item:
             raise HTTPException(404, 'Dashboard not found')
         if item.version != body.version:
-            raise HTTPException(409, 'Dashboard changed; reopen before publishing')
+            raise HTTPException(409, '报表已被其他操作修改，请重新打开后再发布')
         locked = session.execute(update(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.version == body.version).values(version=body.version))
         if locked.rowcount != 1:
-            raise HTTPException(409, 'Dashboard changed; reopen before publishing')
+            raise HTTPException(409, '报表已被其他操作修改，请重新打开后再发布')
         files.enter_context(rollback_files([report_path(dashboard_id, session), settings.report_root / f'{dashboard_id}.json']))
         document = {key: value for key, value in item.document.items() if key != '_mybi'}
         ids = {chart['datasetId'] for chart in document.get('charts', []) if chart.get('datasetId')}
@@ -97,7 +97,7 @@ def list_comments(dashboard_id: str, chart_id: str):
     with SessionLocal() as session:
         items = session.scalars(select(ChartComment).where(ChartComment.dashboard_id == dashboard_id, ChartComment.chart_id == chart_id).order_by(ChartComment.created_at.desc(), ChartComment.id.desc()))
         profile = session.get(UserProfile, 1)
-        return [{'id': item.id, 'author': profile.display_name if item.author_id == 1 and profile else item.author, 'avatar': profile.avatar if item.author_id == 1 and profile else item.avatar, 'can_edit': item.author_id == 1, 'content': item.content, 'created_at': item.created_at.replace(tzinfo=timezone.utc).isoformat()} for item in items]
+        return [{'id': item.id, 'author': profile.display_name if item.author_id == 1 and profile else item.author, 'avatar': profile.avatar if item.author_id == 1 and profile else item.avatar, 'can_edit': item.author_id == 1, 'can_delete': item.author_id in (0, 1), 'content': item.content, 'created_at': item.created_at.replace(tzinfo=timezone.utc).isoformat()} for item in items]
 
 
 @router.put('/{dashboard_id}/charts/{chart_id}/comments/{comment_id}')
@@ -137,7 +137,8 @@ def delete_comment(dashboard_id: str, chart_id: str, comment_id: str):
         item = session.get(ChartComment, comment_id)
         if not item or item.dashboard_id != dashboard_id or item.chart_id != chart_id:
             raise HTTPException(404, 'Comment not found')
-        if item.author_id != 1:
+        # The local user may delete their own comments and visitor comments posted on published pages (author_id 0).
+        if item.author_id not in (0, 1):
             raise HTTPException(403, 'You can only delete your own comments')
         session.delete(item)
 
@@ -196,7 +197,7 @@ def save_dashboard(dashboard_id: str, body: SaveDashboard):
         document = saved_document(body.document, current.document.get('_mybi', {}).get('owner'))
         result = session.execute(update(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.version == body.version).values(name=body.name, document=document, version=body.version + 1))
         if result.rowcount != 1:
-            raise HTTPException(409, 'Dashboard changed; reopen before saving')
+            raise HTTPException(409, '报表已被其他操作修改，请重新打开后再保存')
         files.enter_context(rollback_files([report_path(dashboard_id, session), settings.report_root / f'{dashboard_id}.json']))
         result = payload(session.get(Dashboard, dashboard_id))
         write_report(dashboard_id, session)

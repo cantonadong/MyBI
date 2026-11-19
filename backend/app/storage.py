@@ -10,7 +10,7 @@ import shutil
 from contextlib import contextmanager, nullcontext
 from uuid import UUID, uuid4, getnode
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from .db import SessionLocal
 from .models import Dataset, DatasetSnapshot, Dashboard, PublishedDashboard, DynamicSource, ResourceIdentity, UserProfile
@@ -29,7 +29,8 @@ def current_owner(session):
 def resource_identity(kind, resource_id, session, fingerprint=None):
     item = session.scalar(select(ResourceIdentity).where(ResourceIdentity.kind == kind, ResourceIdentity.resource_id == resource_id))
     if item is None:
-        item = ResourceIdentity(kind=kind, resource_id=resource_id, fingerprint=fingerprint or f'{time.time_ns()}-{getnode():012x}', owner=current_owner(session) if fingerprint is None else None, updated_at=datetime.now(timezone.utc) if fingerprint is None else None)
+        number = (session.scalar(select(func.max(ResourceIdentity.number)).where(ResourceIdentity.kind == kind)) or 0) + 1
+        item = ResourceIdentity(kind=kind, number=number, resource_id=resource_id, fingerprint=fingerprint or f'{time.time_ns()}-{getnode():012x}', owner=current_owner(session) if fingerprint is None else None, updated_at=datetime.now(timezone.utc) if fingerprint is None else None)
         session.add(item)
         session.flush()
     return item
@@ -38,7 +39,7 @@ def resource_identity(kind, resource_id, session, fingerprint=None):
 def resource_metadata(kind, resource_id, session=None):
     with (nullcontext(session) if session is not None else SessionLocal.begin()) as current:
         item = resource_identity(kind, resource_id, current)
-        return {'local_id': item.local_id, 'fingerprint': item.fingerprint, 'owner': item.owner, 'updated_at': item.updated_at.replace(tzinfo=timezone.utc).isoformat() if item.updated_at else None}
+        return {'local_id': item.number or item.local_id, 'fingerprint': item.fingerprint, 'owner': item.owner, 'updated_at': item.updated_at.replace(tzinfo=timezone.utc).isoformat() if item.updated_at else None}
 
 
 def dataset_manifest_path(dataset_id, session=None):

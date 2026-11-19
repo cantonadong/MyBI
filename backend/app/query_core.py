@@ -35,7 +35,7 @@ def library():
 
 
 @contextmanager
-def query_result(config, statement, parameters=(), typed=False):
+def query_result(config, statement, parameters=(), typed=False, read_only=True):
     from .connections import resolve_connection
     from .dynamic import cipher
 
@@ -65,12 +65,14 @@ def query_result(config, statement, parameters=(), typed=False):
             watcher.start()
         request = {
             'profile': {'name': 'MyBI', **{key: config[key] for key in ('host', 'port', 'database', 'user', 'tls', 'redshift')}, 'trust_server_certificate': config.get('trust_server_certificate', False)},
-            'password': password, 'sql': statement, 'parameters': list(parameters), 'typed': typed,
+            'password': password, 'sql': statement, 'parameters': list(parameters), 'typed': typed, 'read_only': read_only,
             'cancel_file': str(cancel_file), 'output': str(output), 'timeout_seconds': settings.dynamic_timeout_seconds,
             'max_rows': settings.dynamic_max_rows, 'max_bytes': settings.max_upload_bytes,
         }
         try:
-            for use_types in ([True, False] if typed and config.get('redshift') else [typed]):
+            # Typed mode prepares the SQL first; multi-statement scripts (e.g. writes followed by SELECT) cannot be
+            # prepared, so retry untyped. Nothing has executed when prepare fails, so the retry cannot repeat writes.
+            for use_types in ([True, False] if typed else [typed]):
                 request['typed'] = use_types
                 result = core.myquery_core_execute(json.dumps(request, ensure_ascii=False).encode('utf-8'))
                 if not result:
@@ -80,7 +82,7 @@ def query_result(config, statement, parameters=(), typed=False):
                 finally:
                     core.myquery_core_free(result)
                 error = str(payload.get('error', ''))
-                if not (use_types and config.get('redshift') and ('42601' in error or 'syntax error' in error.lower())):
+                if not (use_types and ('42601' in error or 'syntax error' in error.lower() or 'multiple commands' in error.lower())):
                     break
             if payload.get('error') == 'CANCELLED':
                 raise HTTPException(499, '查询已取消')

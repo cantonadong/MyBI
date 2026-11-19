@@ -11,12 +11,22 @@ function readLanguage(storageKey = key): Language {
 let language = readLanguage();
 let chartLanguage = readLanguage(chartKey);
 const listeners = new Set<() => void>();
+// Published / exported pages are end-user content: the whole page uses the canvas language they were published with.
+let localeOverride: 'zh-CN' | 'en' | null = null;
+export function setLocaleOverride(value: 'zh-CN' | 'en' | null) {
+  if (value === localeOverride) return;
+  localeOverride = value;
+  document.documentElement.lang = getLocale();
+  listeners.forEach(listener => listener());
+}
 export function getLocale(): 'zh-CN' | 'en' {
+  if (localeOverride) return localeOverride;
   if (language !== 'auto') return language;
   const preferred = (navigator.languages || [navigator.language]).find(value => /^(zh|en)(-|$)/i.test(value)) || navigator.language;
   return /^zh(-|$)/i.test(preferred) ? 'zh-CN' : 'en';
 }
 export function getChartLocale(): 'zh-CN' | 'en' {
+  if (localeOverride) return localeOverride;
   return chartLanguage === 'auto' ? getLocale() : chartLanguage;
 }
 function notify() {
@@ -25,7 +35,7 @@ function notify() {
   syncManagerLocale();
 }
 function syncManagerLocale() {
-  if (document.documentElement.dataset.publicView === 'true') return;
+  if (document.documentElement.dataset.publicView === 'true' || localeOverride) return;
   // The native service manager cannot read browser localStorage.
   void fetch('/api/profile/locale', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: getLocale() }) }).catch(() => {});
 }

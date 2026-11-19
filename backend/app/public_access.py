@@ -100,6 +100,64 @@ def query(report_id: str, dataset_id: str, body: ViewQuery):
     return view_query(dataset_id, body.model_copy(update={'snapshot_id': source['snapshot_id']}))
 
 
+class PublicComment(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+    author: str = Field(default='', max_length=60)
+
+
+def published_chart(report_id: str, chart_id: str):
+    if not any(chart.get('id') == chart_id for chart in public_report(report_id)['document'].get('charts', [])):
+        raise HTTPException(404, 'Chart not found')
+
+
+# Comments on published pages: anyone with the link can read and post (there is no sign-in yet);
+# visitors post under the name they enter and cannot edit or delete comments.
+@public_app.get('/api/public/{report_id}/comment-counts')
+def public_comment_counts(report_id: str):
+    from .api.dashboards import comment_counts
+    public_report(report_id)
+    return comment_counts(report_id)
+
+
+@public_app.get('/api/public/{report_id}/charts/{chart_id}/comments')
+def public_comments(report_id: str, chart_id: str):
+    from .api.dashboards import list_comments
+    published_chart(report_id, chart_id)
+    return [{**item, 'can_edit': False, 'can_delete': False} for item in list_comments(report_id, chart_id)]
+
+
+@public_app.post('/api/public/{report_id}/charts/{chart_id}/comments', status_code=201)
+def public_add_comment(report_id: str, chart_id: str, body: PublicComment):
+    from .db import SessionLocal
+    from .models import ChartComment
+    published_chart(report_id, chart_id)
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(422, 'Comment cannot be empty')
+    with SessionLocal.begin() as session:
+        session.add(ChartComment(dashboard_id=report_id, chart_id=chart_id, author=body.author.strip(), author_id=0, avatar='', content=content))
+    return {'saved': True}
+
+
+@public_app.get('/api/public-portal/{portal_id}')
+def portal(portal_id: str):
+    from .api.access import public_portal
+    return public_portal(portal_id)
+
+
+@public_app.get('/portal/{portal_id}', response_class=HTMLResponse)
+def portal_page(portal_id: str):
+    from .api.access import public_portal
+    public_portal(portal_id)
+    return HTMLResponse((web_dist / 'index.html').read_text(encoding='utf-8').replace('<html', '<html data-public-view="true"', 1), headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+
+
+@public_app.get('/', response_class=HTMLResponse)
+def service_status():
+    # Reachability check for the 访问 buttons in Settings: no report data, just confirms the service answers.
+    return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyBI</title><style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#f4f6fa;font:14px Inter,"Segoe UI",sans-serif;color:#182339}main{padding:24px 32px;border:1px solid #dce3ed;border-radius:9px;background:#fff;text-align:center}p{margin:6px 0 0;color:#64728a;font-size:12px}</style></head><body><main><strong>MyBI 只读服务运行中 / MyBI read-only service is running</strong><p>打开已发布报表或 Portal 的链接即可查看。 Open a published report or portal link to view it.</p></main></body></html>', headers={'Cache-Control': 'no-store'})
+
+
 @public_app.get('/view/{report_id}', response_class=HTMLResponse)
 def page(report_id: str):
     public_report(report_id)
@@ -142,7 +200,17 @@ def access_settings(refresh_ip=False):
             base_url = urlunsplit((parts.scheme, parts.netloc + ':' + str(result['port']), '', '', ''))
     elif public_ip:
         base_url = f"http://{public_ip}:{result['port']}"
-    return {**result, 'public_ip': public_ip, 'access_url': base_url}
+    return {**result, 'public_ip': public_ip, 'access_url': base_url, 'lan_url': f"http://{lan_ip()}:{result['port']}" if lan_ip() else ''}
+
+
+def lan_ip():
+    # Address of the interface used for outbound traffic (UDP connect sends no packets).
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(('192.0.2.1', 9))
+            return probe.getsockname()[0]
+    except OSError:
+        return ''
 
 
 def stop_listener():

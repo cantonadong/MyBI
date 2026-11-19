@@ -173,7 +173,7 @@ def annotation_date(value):
 
 def annotation_rows(headers, rows, fields):
     if not {'start', 'end', 'label'} <= set(fields) or not set(fields) <= {'start', 'end', 'label', 'comment'} or len(fields) != len(set(fields.values())) or set(fields.values()) != set(headers):
-        raise HTTPException(422, 'Annotation 必须包含标签、开始日期、结束日期，可选补充说明列')
+        raise HTTPException(422, '标注必须包含标签、开始日期、结束日期，可选补充说明列')
     indices = {role: headers.index(name) for role, name in fields.items()}
     result = []
     for row in rows:
@@ -186,12 +186,12 @@ def annotation_rows(headers, rows, fields):
                 try:
                     item[role] = annotation_date(value).isoformat()
                 except (ValueError, TypeError):
-                    raise HTTPException(422, 'Annotation 日期必须为 YYYY-MM-DD、YYYY/M/D 或 NULL') from None
+                    raise HTTPException(422, '标注日期必须为 YYYY-MM-DD、YYYY/M/D 或 NULL') from None
         label = row[indices['label']]
         if label is None or not str(label).strip():
-            raise HTTPException(422, 'Annotation 标签不能为空')
+            raise HTTPException(422, '标注标签不能为空')
         if item['start'] and item['end'] and item['start'] > item['end']:
-            raise HTTPException(422, 'Annotation 开始日期不能晚于结束日期')
+            raise HTTPException(422, '标注开始日期不能晚于结束日期')
         result.append({**item, 'label': str(label), **({'comment': str(row[indices['comment']] or '')} if 'comment' in indices else {})})
     return result
 
@@ -638,15 +638,52 @@ def update_field_format(dataset_id: str, request: FieldFormatUpdate) -> dict:
     return update_fields(dataset_id, FieldsUpdate(version=request.version, formats={request.field: DisplayUpdate(format=request.format, decimals=request.decimals)}))
 
 
-@router.post("/datasets/{dataset_id}/view-query")
-def view_query(dataset_id: str, request: ViewQuery) -> dict:
-    if request.snapshot_id:
+def _quote(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def interpreted_source(snapshot, types) -> str:
+    """Parquet columns cast to their configured field types, as charts read them."""
+    arrow_schema = pq.read_schema(snapshot_path(snapshot))
+    interpreted = []
+    for name, kind in types.items():
+        original = arrow_schema.field(name).type
+        column = _quote(name)
+        if kind in {'number', 'integer'} and not (pa.types.is_integer(original) or pa.types.is_floating(original) or pa.types.is_decimal(original)):
+            column = f'TRY_CAST({column} AS DOUBLE)'
+        elif kind == 'date' and not pa.types.is_date(original):
+            column = f'TRY_CAST({column} AS DATE)'
+        elif kind == 'string' and not pa.types.is_string(original):
+            column = f'CAST({column} AS VARCHAR)'
+        interpreted.append(column + ' AS ' + _quote(name))
+    return '(SELECT ' + ','.join(interpreted) + ' FROM read_parquet(?))'
+
+
+def query_snapshot(dataset_id: str, snapshot_id: str | None):
+    if snapshot_id:
         with SessionLocal() as session:
-            snapshot = session.get(DatasetSnapshot, request.snapshot_id)
+            snapshot = session.get(DatasetSnapshot, snapshot_id)
             if not snapshot or snapshot.dataset_id != dataset_id or snapshot.status != 'SUCCEEDED':
                 raise HTTPException(410, 'Dataset snapshot is unavailable')
-    else:
-        _, snapshot = get_pair(dataset_id)
+        return snapshot
+    return get_pair(dataset_id)[1]
+
+
+@router.get("/datasets/{dataset_id}/export-rows")
+def export_rows(dataset_id: str, snapshot_id: str | None = None) -> dict:
+    """All rows of a snapshot, typed like chart queries, for the offline interactive page export."""
+    snapshot = query_snapshot(dataset_id, snapshot_id)
+    types = {field['name']: field['type'] for field in snapshot.schema_json}
+    with query_slots, duckdb.connect() as connection:
+        connection.execute("SET memory_limit='512MB'")
+        cursor = connection.execute('SELECT * FROM ' + interpreted_source(snapshot, types), [snapshot_path(snapshot)])
+        rows = [list(row) for row in cursor.fetchall()]
+    return {'snapshot_id': snapshot.id, 'data_as_of': snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), 'columns': list(types), 'rows': rows}
+
+
+@router.post("/datasets/{dataset_id}/view-query")
+def view_query(dataset_id: str, request: ViewQuery) -> dict:
+    snapshot = query_snapshot(dataset_id, request.snapshot_id)
     allowed = {field["name"] for field in snapshot.schema_json}
     if not request.fields or not set(request.fields).issubset(allowed):
         raise HTTPException(422, "Unknown field")
@@ -685,19 +722,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
             raise HTTPException(422, "Unsupported filter")
     source = 'read_parquet(?)'
     if request.chart_type and request.chart_type != 'table':
-        arrow_schema = pq.read_schema(snapshot_path(snapshot))
-        interpreted = []
-        for name, kind in types.items():
-            original = arrow_schema.field(name).type
-            column = quote(name)
-            if kind in {'number', 'integer'} and not (pa.types.is_integer(original) or pa.types.is_floating(original) or pa.types.is_decimal(original)):
-                column = f'TRY_CAST({column} AS DOUBLE)'
-            elif kind == 'date' and not pa.types.is_date(original):
-                column = f'TRY_CAST({column} AS DATE)'
-            elif kind == 'string' and not pa.types.is_string(original):
-                column = f'CAST({column} AS VARCHAR)'
-            interpreted.append(column + ' AS ' + quote(name))
-        source = '(SELECT ' + ','.join(interpreted) + ' FROM read_parquet(?))'
+        source = interpreted_source(snapshot, types)
     projection = ','.join(map(quote, request.fields))
     group = ' GROUP BY ' + projection if request.distinct else ''
     if request.chart_type == 'date-range':

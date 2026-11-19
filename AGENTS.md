@@ -1,5 +1,7 @@
 # Project UI rules
 
+- Follow `docs/ui-guidelines.md` (shared UI/UE rules derived from the Reports and Settings pages): reuse its tokens, page layouts, components and feedback patterns for every new page and feature, and add any new shared pattern to it.
+
 - Keep buttons compact and sized to their labels; do not stretch them across available space. Repeated row actions must have equal widths and align.
 - Toasts last 3 seconds in total and fade out before disappearing.
 

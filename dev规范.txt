@@ -1,5 +1,5 @@
 系统环境
-已安装 python，npm,node,android cli, go,rust,github cli
+已安装 python，npm,node,android cli, go,rust,github cli,llvm-mingw
 若需要安装新工具，尽量安装到 D:\Program\ 下，安装后，记得自动添加脚本到全局变量，方便后续调用
 
 0. 执行代码首选 git bash 执行，不兼容的再考虑 powershell 或 cmd

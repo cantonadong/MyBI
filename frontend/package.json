@@ -1,11 +1,11 @@
 {
   "name": "data-workbench-web",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.ts --host 127.0.0.1",
-    "build": "tsc -b && vite build --config vite.config.ts",
+    "build": "tsc -b && vite build --config vite.config.ts && vite build --config vite.export.config.ts",
     "test": "vitest --config vite.config.ts",
     "typecheck": "tsc -b --pretty false"
   },

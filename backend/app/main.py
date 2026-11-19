@@ -18,6 +18,7 @@ import base64
 import secrets
 from .api.sources import router as sources_router
 from .api.scheduled_queries import router as scheduled_queries_router
+from .api.access import router as access_router
 from .storage import materialize_existing
 from .connections import router as connections_router, migrate_connections
 from .shared_data import synchronize_connections
@@ -78,11 +79,26 @@ with engine.begin() as connection:
         connection.execute(text('ALTER TABLE resource_identities ADD COLUMN owner VARCHAR(255)'))
     if 'updated_at' not in identity_columns:
         connection.execute(text('ALTER TABLE resource_identities ADD COLUMN updated_at TIMESTAMP'))
+    if 'number' not in identity_columns:
+        # Per-kind IDs from now on; already assigned IDs keep their value.
+        connection.execute(text('ALTER TABLE resource_identities ADD COLUMN number INTEGER'))
+        connection.execute(text('UPDATE resource_identities SET number = local_id WHERE number IS NULL'))
+        # One-off: drop leftover numbers of already-deleted portals/users/roles/tasks so those kinds start from 1.
+        for kind, table in (('portal', 'portals'), ('user', 'directory_users'), ('role', 'roles'), ('scheduled', 'scheduled_queries')):
+            connection.execute(text(f'DELETE FROM resource_identities WHERE kind = :kind AND resource_id NOT IN (SELECT id FROM {table})'), {'kind': kind})
+    user_columns = {column['name'] for column in inspect(connection).get_columns('directory_users')}
+    if 'department_ids' not in user_columns:
+        connection.execute(text("ALTER TABLE directory_users ADD COLUMN department_ids JSON NOT NULL DEFAULT '[]'"))
+    if 'is_current' not in user_columns:
+        connection.execute(text('ALTER TABLE directory_users ADD COLUMN is_current BOOLEAN NOT NULL DEFAULT 0'))
+    if 'department_ids' not in {column['name'] for column in inspect(connection).get_columns('roles')}:
+        connection.execute(text("ALTER TABLE roles ADD COLUMN department_ids JSON NOT NULL DEFAULT '[]'"))
 app.include_router(datasets_router)
 app.include_router(dashboards_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(scheduled_queries_router)
+app.include_router(access_router)
 app.include_router(connections_router)
 app.include_router(public_access.router)
 
@@ -118,6 +134,11 @@ if WEB_DIST.is_dir():
     @app.get('/reports', include_in_schema=False)
     @app.get('/reports/new', include_in_schema=False)
     @app.get('/datasets', include_in_schema=False)
+    @app.get('/scheduled-queries', include_in_schema=False)
+    @app.get('/portals', include_in_schema=False)
+    @app.get('/roles', include_in_schema=False)
+    @app.get('/permissions', include_in_schema=False)
+    @app.get('/users', include_in_schema=False)
     @app.get('/settings', include_in_schema=False)
     def module_page():
         return FileResponse(WEB_DIST / 'index.html')

@@ -5,6 +5,15 @@ import { formatChartField as formatField, parseCategoryOrder, titleCase } from '
 import { t, translate, useChartLanguage } from './i18n';
 
 type Value = string | number | boolean | null;
+// Width of one date input (styles.css .filter-date-range input): fits yyyy-mm-dd plus the calendar icon.
+const DATE_INPUT_WIDTH = 112;
+// Yesterday as YYYY-MM-DD in the viewer's local timezone.
+function yesterday() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+const filterOptions = new Map<string, Value[]>();
 
 function FilterChoices({ dataset, field, filters, values, tiled, multiple, required, disabled, sort, orderText, onChange, displayLocale }: { displayLocale?: 'en' | 'zh-CN'; dataset: Dataset; field: string; filters: Filter[]; values: Value[]; tiled: boolean; multiple: boolean; required: boolean; disabled: boolean; sort: ChartConfig['filterSort']; orderText: string; onChange: (values: Value[], automatic?: boolean) => void }) {
   const [options, setOptions] = useState<Value[]>([]), [error, setError] = useState(''), [loading, setLoading] = useState(false);
@@ -13,12 +22,16 @@ function FilterChoices({ dataset, field, filters, values, tiled, multiple, requi
   const t = (text: string, ...values: unknown[]) => translate(locale, text, values);
   const loadedQuery = useRef('');
   const query = JSON.stringify({ snapshot_id: dataset.snapshot_id, fields: [field], filters, distinct: true, chart_type: 'filter', limit: 10000 });
+  const cacheKey = [dataset.id, dataset.version || '', query].join('|');
   useEffect(() => {
     if (disabled || !field) { setOptions([]); return; }
+    // Reuse option lists when a report tab is shown again (the canvas remounts on tab switch).
+    const cached = filterOptions.get(cacheKey);
+    if (cached) { loadedQuery.current = query; setOptions(cached); setError(''); setLoading(false); return; }
     let active = true;
     setLoading(true); setError('');
     api(`/datasets/${dataset.id}/view-query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: query })
-      .then(result => { if (active) { loadedQuery.current = query; setOptions(result.rows.map((row: Record<string, Value>) => row[field])); } })
+      .then(result => { const values = result.rows.map((row: Record<string, Value>) => row[field]); filterOptions.set(cacheKey, values); if (filterOptions.size > 200) filterOptions.delete(filterOptions.keys().next().value!); if (active) { loadedQuery.current = query; setOptions(values); } })
       .catch(error => { if (active) setError(error.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -65,15 +78,28 @@ export function FilterControl({ tile, dataset, global, onChange, onContentWidth,
   const update = useRef(onChange); update.current = onChange;
   const autoRange = c.filterRangeAuto ?? !c.filterRange?.some(Boolean);
   const [rangeError, setRangeError] = useState('');
+  // Date ranges: the end defaults to yesterday (local date) and moves forward by itself until the user picks an end;
+  // the start defaults to the dataset's first date until the user picks a start. Clearing restores both defaults.
+  // "最近 X" keeps ending at the dataset's latest date.
+  const latestRange = useRef({ range: c.filterRange, auto: autoRange, endFixed: !!c.filterEndFixed }); latestRange.current = { range: c.filterRange, auto: autoRange, endFixed: !!c.filterEndFixed };
   useEffect(() => {
-    if ((style !== 'date-last' && (!autoRange || style !== 'date-range')) || !dataset || !c.dimension) return;
+    if ((style !== 'date-last' && style !== 'date-range') || !dataset || !c.dimension) return;
     let active = true;
     setRangeError('');
     api(`/datasets/${dataset.id}/view-query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: dataset.snapshot_id, fields: [c.dimension], chart_type: 'date-range', limit: 1 }) })
-      .then(result => { if (active) update.current({ filterRange: [result.rows[0]?.__start || '', result.rows[0]?.__end || ''], filterRangeAuto: true }, true); })
+      .then(result => {
+        if (!active) return;
+        const first = result.rows[0]?.__start || '', latest = result.rows[0]?.__end || '';
+        if (style === 'date-last') { if (!autoRange) return; update.current({ filterRange: [first, latest], filterRangeAuto: true }, true); return; }
+        const { range, auto, endFixed } = latestRange.current;
+        const last = endFixed && range?.[1] ? range[1] : yesterday();
+        const start = !auto && range?.[0] ? range[0] : first;
+        const next: [string, string] = [start && start > last ? last : start, last];
+        if (next[0] !== range?.[0] || next[1] !== range?.[1]) update.current({ filterRange: next, filterRangeAuto: auto || !range?.[0] }, true);
+      })
       .catch(error => { if (active) setRangeError(error.message); });
     return () => { active = false; };
-  }, [autoRange, style, c.dimension, dataset?.id, dataset?.snapshot_id, dataset?.version]);
+  }, [autoRange, c.filterEndFixed, style, c.dimension, dataset?.id, dataset?.snapshot_id, dataset?.version]);
   useLayoutEffect(() => {
     const element = content.current;
     if (!c.filterAutoWidth || !element || !onContentWidth) return;
@@ -91,7 +117,7 @@ export function FilterControl({ tile, dataset, global, onChange, onContentWidth,
       element.querySelectorAll('.filter-tiles').forEach(group => {
         width = Math.max(width, 24 + Array.from(group.children).reduce((sum, button) => sum + context.measureText(button.textContent || '').width + 25, 0));
       });
-      if (style === 'date-range') width = Math.max(width, 310);
+      if (style === 'date-range') width = Math.max(width, 2 * DATE_INPUT_WIDTH + 8 + 24);
       if (style === 'date-last') width = Math.max(width, 260);
       onContentWidth(width);
     };
@@ -109,14 +135,14 @@ export function FilterControl({ tile, dataset, global, onChange, onContentWidth,
     {rangeError && <p role="alert">{rangeError}</p>}
     {style === 'date-range' ? <div className="filter-date-range">
       <label>{t('开始日期')}<input type="date" required={c.filterRequired} aria-label={t('开始日期')} max={c.filterRange?.[1] || undefined} value={c.filterRange?.[0] || ''} onChange={event => { if (!c.filterRequired || event.target.value) onChange({ filterRange: [event.target.value, c.filterRange?.[1] || ''], filterRangeAuto: false }); }} /></label>
-      <label>{t('结束日期')}<input type="date" required={c.filterRequired} aria-label={t('结束日期')} min={c.filterRange?.[0] || undefined} value={c.filterRange?.[1] || ''} onChange={event => { if (!c.filterRequired || event.target.value) onChange({ filterRange: [c.filterRange?.[0] || '', event.target.value], filterRangeAuto: false }); }} /></label>
+      <label>{t('结束日期')}<input type="date" required={c.filterRequired} aria-label={t('结束日期')} title={t('默认为昨天')} min={c.filterRange?.[0] || undefined} value={c.filterRange?.[1] || ''} onChange={event => { if (!c.filterRequired || event.target.value) onChange({ filterRange: [c.filterRange?.[0] || '', event.target.value], filterEndFixed: !!event.target.value }); }} /></label>
       {c.filterRange?.every(Boolean) && c.filterRange[0] > c.filterRange[1] && <p role="alert">{t('开始日期不能晚于结束日期')}</p>}
     </div> : style === 'date-last' ? <div className="filter-relative"><div className="filter-relative-controls"><span>{t('最近')}</span><input type="number" min={1} max={10000} step={1} aria-label={t('最近数量')} value={c.filterLastCount || 1} onChange={event => { const value = event.target.valueAsNumber; if (Number.isInteger(value) && value >= 1 && value <= 10000) onChange({ filterLastCount: value }); }} /><select aria-label={t('日期单位')} value={c.filterLastUnit || 'day'} onChange={event => onChange({ filterLastUnit: event.target.value as ChartConfig['filterLastUnit'] })}>{(['day', 'week', 'month', 'quarter', 'year'] as const).map(unit => <option key={unit} value={unit}>{t({ day: '天', week: '周', month: '月', quarter: '季度', year: '年' }[unit])}</option>)}</select></div>{relativeRange.every(Boolean) && <small>{relativeRange.join(' — ')}</small>}</div> : fields.map((field, index) => <div className="filter-level" key={field}><span>{titleCase(dataset.schema.find(item => item.name === field)?.display_name || field)}</span>
       <FilterChoices displayLocale={locale} dataset={dataset} field={field} tiled={style === 'tiles'} required={!!c.filterRequired} multiple={(c.filterSelection || (style === 'tiles' ? 'multiple' : 'single')) === 'multiple'} disabled={!!c.filterRequired && fields.slice(0, index).some(parent => !selected[parent]?.length)} values={selected[field] || []} sort={c.filterSort} orderText={c.filterOrderText || ''}
         filters={[...active, ...fields.slice(0, index).flatMap(parent => selected[parent]?.length ? [{ field: parent, op: 'in', value: selected[parent] }] : [])]}
         onChange={(values, automatic) => onChange({ filterValues: { ...Object.fromEntries(fields.slice(0, index).map(parent => [parent, selected[parent] || []])), [field]: values } }, automatic)} />
     </div>)}
-    {style !== 'date-last' && <button className="filter-clear" disabled={c.filterRequired || !Object.values(selected).some(values => values.length) && !c.filterRange?.some(Boolean)} onClick={() => onChange({ filterValues: {}, filterRange: style === 'date-range' && autoRange ? c.filterRange : ['', ''], filterRangeAuto: true })}>{t('清空筛选')}</button>}
+    {style !== 'date-last' && style !== 'date-range' && <button className="filter-clear" disabled={c.filterRequired || !Object.values(selected).some(values => values.length) && !c.filterRange?.some(Boolean) && !c.filterEndFixed} onClick={() => onChange({ filterValues: {}, filterRange: ['', ''], filterRangeAuto: true, filterEndFixed: false })}>{t('清空筛选')}</button>}
   </div>;
 }
 
@@ -131,6 +157,7 @@ export function FilterProperties({ config: c, dataset, onChange }: { config: Cha
   return <>
     <label>{t('筛选器标题')}<input value={c.title || ''} onChange={event => onChange({ title: event.target.value })} /></label>
     <label><input type="checkbox" checked={!!c.filterRequired} onChange={event => onChange({ filterRequired: event.target.checked })} />{t('必选')}</label>
+    <label><input type="checkbox" checked={!!c.filterInTitle} onChange={event => onChange({ filterInTitle: event.target.checked })} />{t('应用到图表标题')}</label>
     {!schema.length && <p className="filter-hint">{t('数据集没有文本或日期维度')}</p>}
     <label>{t('筛选器样式')}<select value={style || 'dropdown'} onChange={event => { const style = event.target.value as ChartConfig['filterStyle']; const first = (style === 'date-range' || style === 'date-last' ? dateFields.find(field => field.name === c.dimension) || dateFields[0] : schema.find(field => field.name === c.dimension) || schema[0])?.name || ''; onChange({ filterStyle: style, dimension: first, filterFields: schema.slice(0, 2).map(field => field.name), filterValues: {}, filterRange: ['', ''], filterRangeAuto: true }); }}>
       {isDate && <><option value="date-range">{t('日期范围')}</option><option value="date-last" disabled={!dateFields.length}>{t('最近 X')}</option></>}<option value="dropdown">{t('下拉')}</option><option value="tiles">{t('平铺')}</option><option value="cascade">{t('级联下拉')}</option>
@@ -150,6 +177,6 @@ export function FilterProperties({ config: c, dataset, onChange }: { config: Cha
     {style === 'cascade' ? <>{fields.map((field, index) => <div className="metric-binding-row" key={index}><label>{t('级联字段 {0}', index + 1)}<select value={field} onChange={event => onChange({ filterFields: fields.map((name, i) => i === index ? event.target.value : name), filterValues: {} })}>{schema.map(item => <option key={item.name} value={item.name} disabled={item.name !== field && fields.includes(item.name)}>{titleCase(item.display_name || item.name)}</option>)}</select></label><button className="binding-button metric-remove" aria-label={t('移除字段')} onClick={() => onChange({ filterFields: fields.filter((_, i) => i !== index), filterValues: {} })}>×</button></div>)}
       <button disabled={fields.length >= schema.length} onClick={() => { const next = schema.find(field => !fields.includes(field.name)); if (next) onChange({ filterFields: [...fields, next.name], filterValues: {} }); }}>{t('添加级联字段')}</button>
     </> : <label>{t('筛选字段')}<select value={schema.some(field => field.name === c.dimension) ? c.dimension : ''} onChange={event => onChange({ dimension: event.target.value, filterStyle: dateFields.some(field => field.name === event.target.value) ? style === 'date-last' ? 'date-last' : 'date-range' : ['date-range', 'date-last'].includes(style || '') ? 'dropdown' : style, filterValues: {}, filterRange: ['', ''], filterRangeAuto: true })}><option value="">{t('请选择')}</option>{options}</select></label>}
-    <p className="filter-hint">{t('筛选同一数据集的图表；级联字段按从上到下的顺序联动。')}</p>
+    <p className="filter-hint">{t('筛选包含相同字段的图表；级联字段按从上到下的顺序联动。')}</p>
   </>;
 }

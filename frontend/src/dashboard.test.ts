@@ -12,12 +12,12 @@ describe('canvas filter following', () => {
     expect(followedFilterIds({ ...chart, followFilterIds: ['b'] }, [a, b], dataset)).toEqual(['b']);
     expect(followedFilterIds({ ...chart, followFilterIds: [] }, [a, b], dataset)).toEqual([]);
   });
-  it('does not fall back to earlier filters when the nearest dimension does not match', () => {
-    const mismatch = { ...b, config: { ...b.config, dimension: 'day' } };
-    const chart = tile('chart', 15);
-    expect(followedFilterIds(chart, [a, mismatch], dataset)).toEqual([]);
-    expect(followedFilterIds({ ...chart, followFilterIds: ['b'] }, [a, mismatch], dataset)).toEqual([]);
-    expect(followedFilterIds(chart, [a, { ...b, datasetId: 'other' }], dataset)).toEqual([]);
+  it('finds the nearest applicable filter above, across charts and datasets sharing the field', () => {
+    const missing = { ...b, config: { ...b.config, dimension: 'missing' } };
+    const chart = tile('chart', 15), between = tile('between', 12);
+    expect(followedFilterIds(chart, [a, between, missing, chart], dataset)).toEqual(['a']);
+    expect(followedFilterIds({ ...chart, followFilterIds: ['b'] }, [a, missing], dataset)).toEqual([]);
+    expect(followedFilterIds(chart, [a, { ...b, datasetId: 'other' }], dataset)).toEqual(['b']);
   });
   it('numbers newly added and copied filters after the highest existing suffix', () => {
     expect(nextFilterTitle([])).toMatch(/ 1$/);

@@ -5,12 +5,12 @@ import { ChartConfig } from './registry';
 import { optionFor, Row } from './options';
 import { chartColors } from './palettes';
 import { formatChartField as fieldValue, metricFormat, type FieldFormat } from '../fieldDisplay';
-export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange }: { config: ChartConfig; rows: Row[]; page?: number; pageSize?: number; onPageChange?: (page: number) => void }) {
+export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange, animate = true }: { config: ChartConfig; rows: Row[]; page?: number; pageSize?: number; onPageChange?: (page: number) => void; animate?: boolean }) {
   const { locale: defaultLocale } = useChartLanguage();
   const locale = config.locale || defaultLocale;
   const ref = useRef<HTMLDivElement>(null), [error, setError] = useState('');
   const mapName = useId();
-  const latest = useRef({ config, rows }); latest.current = { config, rows };
+  const latest = useRef({ config, rows, animate }); latest.current = { config, rows, animate };
   const t = (text: string, ...values: unknown[]) => translate(latest.current.config.locale || getChartLocale(), text, values);
   const formatField = (value: unknown, format?: FieldFormat) => fieldValue(value, format, locale);
   const updateChart = useRef<() => void>();
@@ -26,6 +26,7 @@ export function ChartView({ config, rows, page = 0, pageSize = 10, onPageChange 
       const { config, rows } = latest.current;
       if (config.type === 'map' && config.mapGeoJSON) echarts.registerMap(mapName, config.mapGeoJSON as any);
       const option = optionFor(config, rows, mapName, { width: chart.getWidth(), height: chart.getHeight(), measureText: context ? text => context.measureText(text).width : undefined });
+      if (!latest.current.animate) (option as { animation?: boolean }).animation = false;
       if (selected) option.legend.selected = selected;
       const partial = selected && Object.values(selected).some(value => !value);
       option.legend.left = 'center';
