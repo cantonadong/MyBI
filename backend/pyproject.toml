@@ -2,6 +2,7 @@
 name = "data-workbench-api"
 version = "1.5.0"
 requires-python = ">=3.12"
+license = "MIT"
 dependencies = [
   "alembic>=1.20",
   "duckdb>=2.0",

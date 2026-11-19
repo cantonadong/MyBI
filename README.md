@@ -92,3 +92,7 @@ The manager starts Python directly and keeps stdout/stderr in `data/logs`, witho
 After pulling updates on another computer, rerun `npm.cmd --prefix frontend ci` and `./scripts/build.ps1` to refresh both the web build and `MyBI.exe`. Commit `frontend/package-lock.json` and `desktop/Cargo.lock` with dependency changes. Generated executables, `frontend/dist`, runtimes, databases and imported snapshots are local files and are not synchronized by Git.
 
 Tests are not run by the build script. v1.5 was built and packaged without running the test suite.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
