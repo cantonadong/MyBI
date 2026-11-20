@@ -1,5 +1,6 @@
 import ctypes
 import json
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import Event, Thread
@@ -20,7 +21,7 @@ query_cancel = ContextVar('query_cancel', default=None)
 @lru_cache(maxsize=1)
 def library():
     try:
-        core = ctypes.CDLL(str(PROJECT_ROOT / 'myquery_core.dll'))
+        core = ctypes.CDLL(str(PROJECT_ROOT / ('myquery_core.dll' if os.name == 'nt' else 'libmyquery_core.so')))
         core.myquery_core_version.argtypes = []
         core.myquery_core_version.restype = ctypes.c_uint32
         if core.myquery_core_version() != 2:

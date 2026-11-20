@@ -10,8 +10,10 @@ try {
     if (Test-Path -LiteralPath (Join-Path $MyQueryRoot 'build.ps1')) {
         & (Join-Path $MyQueryRoot 'build.ps1') -CoreOnly -LlvmBin $LlvmBin
         Set-Location $projectRoot
-        Copy-Item -LiteralPath (Join-Path $MyQueryRoot 'myquery_core.dll') -Destination (Join-Path $projectRoot 'myquery_core.dll') -Force
-    } elseif (-not (Test-Path -LiteralPath myquery_core.dll)) {
+        foreach ($library in 'myquery_core.dll', 'duckdb.dll') {
+            Copy-Item -LiteralPath (Join-Path $MyQueryRoot $library) -Destination (Join-Path $projectRoot $library) -Force
+        }
+    } elseif (-not (Test-Path -LiteralPath myquery_core.dll) -or -not (Test-Path -LiteralPath duckdb.dll)) {
         throw 'Build MyQuery shared query core first or provide -MyQueryRoot.'
     }
     & cargo +stable-x86_64-pc-windows-gnu build --manifest-path desktop/Cargo.toml --release --locked

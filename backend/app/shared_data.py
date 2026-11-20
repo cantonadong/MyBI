@@ -116,6 +116,8 @@ def write_passwords(passwords):
 
 def synchronize_connections():
     global _stamp
+    if os.name != 'nt':
+        return  # Sharing with the MyQuery desktop app (DPAPI) is Windows-only; servers keep connections in the database.
     from .connections import ConnectionRequest
     from .dynamic import cipher
     path = config_path()
@@ -196,6 +198,8 @@ def synchronize_connections():
 
 def publish_connection(item, previous_name=None, delete=False):
     global _stamp
+    if os.name != 'nt':
+        return
     from .dynamic import cipher
     path = config_path()
     with file_lock(path.with_suffix('.lock')), file_lock(path.with_name('passwords.lock')):

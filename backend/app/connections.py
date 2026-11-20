@@ -112,7 +112,9 @@ def migrate_connections():
 @router.get('')
 def list_connections():
     synchronize_connections()
-    ranks = {profile.get('shared_id'): index for index, profile in enumerate(read_config().get('profiles', []))}
+    content = read_config()
+    # Off Windows there is no MyQuery profile list, so the order is kept as plain ids in the server's own config file.
+    ranks = {identity: index for index, identity in enumerate(content.get('order', []))} if os.name != 'nt' else {profile.get('shared_id'): index for index, profile in enumerate(content.get('profiles', []))}
     with SessionLocal() as session:
         items = [public_connection(item) for item in session.scalars(select(SavedConnection).order_by(SavedConnection.name)) if not item.config.get('shared_deleted')]
         return sorted(items, key=lambda item: ranks.get(item['id'], len(ranks)))
@@ -128,10 +130,17 @@ def order_connections(body: ConnectionOrder):
     path = config_path()
     with file_lock(path.with_suffix('.lock')):
         content = read_config()
-        profiles = {profile['shared_id']: profile for profile in content.get('profiles', [])}
-        if len(body.ids) != len(set(body.ids)) or set(body.ids) != set(profiles):
+        if os.name == 'nt':
+            known = {profile['shared_id']: profile for profile in content.get('profiles', [])}
+        else:
+            with SessionLocal() as session:
+                known = {item.id: item for item in session.scalars(select(SavedConnection)) if not item.config.get('shared_deleted')}
+        if len(body.ids) != len(set(body.ids)) or set(body.ids) != set(known):
             raise HTTPException(409, '连接列表已变化，请刷新后重试')
-        content['profiles'] = [profiles[identity] for identity in body.ids]
+        if os.name == 'nt':
+            content['profiles'] = [known[identity] for identity in body.ids]
+        else:
+            content['order'] = body.ids
         atomic_json(path, content)
     return list_connections()
 
