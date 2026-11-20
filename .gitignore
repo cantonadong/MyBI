@@ -23,3 +23,5 @@ runtime/
 desktop/target/
 tests/*-tested.png
 dev规范.txt
+libmyquery_core.so
+libmyquery_core.so.tmp
