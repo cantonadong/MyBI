@@ -57,7 +57,7 @@ else:
             if child.marker is None or any(child.marker.evaluate({'extra': extra}) for extra in extras | {''}):
                 pending.append(str(child))
 
-for name in ('MyBI.exe', 'myquery_core.dll', 'duckdb.dll', 'README.md'):
+for name in ('MyBI.exe', 'myquery_core.dll', 'README.md'):
     shutil.copy2(root / name, stage / name)
 shutil.copytree(root / 'backend/app', stage / 'backend/app', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2(root / 'backend/pyproject.toml', stage / 'backend/pyproject.toml')
