@@ -139,7 +139,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     const unit = setting === 'auto' ? magnitude >= 1e9 ? 'b' : magnitude >= 1e6 ? 'm' : magnitude >= 1e3 ? 'k' : 'none' : setting;
     if (unit === 'none') return metricValue(value, field);
     const divisor = { k: 1e3, m: 1e6, b: 1e9 }[unit];
-    return formatField(value / divisor, { kind: 'decimal', format: 'number', decimals: format?.decimals || 1, rounding: format?.rounding }) + unit.toUpperCase();
+    return formatField(value / divisor, { kind: 'decimal', format: 'number', decimals: c.labelUnitDecimals || 1, rounding: format?.rounding }) + unit.toUpperCase();
   };
   const cartesian = ['bar', 'line', 'area', 'mixed'].includes(c.type);
   const count = Math.max(1, ...option.series.map((series: any) => series.data?.length || 1));

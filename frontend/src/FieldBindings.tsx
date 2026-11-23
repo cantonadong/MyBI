@@ -47,6 +47,9 @@ export function FieldBindings({ config: c, fields, onChange }: { config: ChartCo
       <label>{t('数值单位')}<select aria-label={t('数值单位')} value={c.labelUnit || 'auto'} onChange={event => onChange({ labelUnit: event.target.value as ChartConfig['labelUnit'] })}>
         <option value="auto">{t('自动')}</option><option value="none">{t('原值')}</option><option value="k">K</option><option value="m">M</option><option value="b">B</option>
       </select></label>
+      {c.labelUnit !== 'none' && <label>{t('单位小数位数')}<select aria-label={t('单位小数位数')} value={c.labelUnitDecimals || 1} onChange={event => onChange({ labelUnitDecimals: Number(event.target.value) })}>
+        {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}
+      </select></label>}
     </fieldset>}
     {multiple ? <section className="metric-bindings">
       <div className="binding-heading"><strong>{c.horizontal ? t('Y 轴') : t('X 轴')}</strong><button className="binding-button" aria-label={t('添加维度')} title={t('添加维度')} disabled={!nextDimension || axisDimensions.length >= 32} onClick={() => { if (nextDimension) updateDimensions([...axisDimensions, nextDimension.name]); }}>＋</button></div>

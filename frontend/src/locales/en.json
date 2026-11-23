@@ -482,6 +482,7 @@
   "显示密度": "Label density",
   "每隔 {0} 个": "Skip {0} between labels",
   "数值单位": "Value units",
+  "单位小数位数": "Unit decimal places",
   "原值": "Original",
   "数据集名称不能为空": "Dataset name cannot be empty",
   "自定义分组名称": "Custom group names",
