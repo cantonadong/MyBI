@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:ev="http://www.w3.org/2001/xml-events" xmlns:xlink="http://www.w3.org/1999/xlink" baseProfile="full" height="24px" version="1.1" viewBox="0 0 24 24" width="24px">
+  <title>clipboard icon</title>
+  <desc>Editable vector UI design. All text and shapes are native SVG elements. No embedded bitmaps.</desc>
+  <defs/>
+  <g id="icon-clipboard-0-0" transform="translate(0,0) scale(1.0)">
+    <path d="M 8,4 L 6,4 L 5,5 L 5,21 L 6,22 L 18,22 L 19,21 L 19,5 L 18,4 L 16,4 M 9,2 L 15,2 L 15,7 L 9,7 Z" fill="none" stroke="#5264F6" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/>
+  </g>
+</svg>

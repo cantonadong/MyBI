@@ -1,0 +1,77 @@
+"""Run with .venv/Scripts/python.exe tests/browser_workflow.py after starting API and web."""
+from pathlib import Path
+import os
+from playwright.sync_api import sync_playwright, expect
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def main():
+    with sync_playwright() as runtime:
+        browser = runtime.chromium.launch(headless=True)
+        page = browser.new_page(viewport={'width': 1600, 'height': 1000})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(os.getenv('WORKBENCH_TEST_URL', 'http://127.0.0.1:5173'))
+        expect(page.get_by_role('heading', name='Data Workbench')).to_be_visible()
+        page.get_by_role('button', name='＋ 导入数据').click()
+        page.get_by_label('粘贴数据').fill('region\tamount\nNorth\t10\nNorth\t20\nSouth\t50')
+        page.get_by_role('button', name='预览数据').click()
+        expect(page.get_by_text('3 行，确认字段类型后导入')).to_be_visible()
+        page.get_by_role('button', name='确认导入').click()
+        expect(page.get_by_role('dialog')).to_have_count(0)
+        page.get_by_role('button', name='＋ 柱状图', exact=True).click()
+        page.get_by_role('button', name='＋ 折线图', exact=True).click()
+        expect(page.get_by_test_id('chart-tile')).to_have_count(2)
+        first = page.get_by_test_id('chart-tile').nth(0)
+        before = first.bounding_box()
+        header = first.locator('.card-head').bounding_box()
+        page.mouse.move(header['x'] + 75, header['y'] + 15)
+        page.mouse.down()
+        page.mouse.move(header['x'] + 75, header['y'] + 165, steps=12)
+        page.mouse.up()
+        page.wait_for_function('(y) => document.querySelector("[data-testid=chart-tile]").getBoundingClientRect().y > y + 30', arg=before['y'])
+        width = first.bounding_box()['width']
+        handle = first.locator('.react-resizable-handle-se').bounding_box()
+        page.mouse.move(handle['x'] + 5, handle['y'] + 5)
+        page.mouse.down()
+        page.mouse.move(handle['x'] - 90, handle['y'] + 65, steps=12)
+        page.mouse.up()
+        page.wait_for_function('(width) => document.querySelector("[data-testid=chart-tile]").getBoundingClientRect().width < width - 20', arg=width)
+        page.get_by_test_id('chart-tile').nth(1).locator('.card-head').click(position={'x': 60, 'y': 15})
+        page.get_by_label('筛选模式').select_option('both')
+        page.locator('.properties').get_by_role('button', name='＋ 添加筛选条件').click()
+        page.locator('.properties').get_by_label('筛选字段 1').select_option('amount')
+        page.locator('.properties').get_by_label('筛选类型 1').select_option('between')
+        page.get_by_label('下限', exact=True).fill('15')
+        page.get_by_label('上限', exact=True).fill('60')
+        global_panel = page.locator('.global-filters')
+        global_panel.get_by_role('button', name='＋ 添加筛选条件').click()
+        global_panel.get_by_label('筛选字段 1').select_option('region')
+        global_panel.get_by_label('筛选类型 1').select_option('eq')
+        global_panel.get_by_label('筛选值 1').fill('North')
+        page.get_by_label('仪表板名称').fill('自动测试 多图表筛选')
+        page.get_by_role('button', name='保存仪表板', exact=True).click()
+        expect(page.get_by_role('status')).to_have_text('已保存')
+        expect(page.get_by_label('打开仪表板')).not_to_have_value('')
+        saved_id = page.get_by_label('打开仪表板').input_value()
+        page.reload()
+        expect(page.get_by_label('打开仪表板').locator(f'option[value="{saved_id}"]')).to_have_count(1)
+        page.get_by_label('打开仪表板').select_option(saved_id)
+        expect(page.get_by_test_id('chart-tile')).to_have_count(2)
+        page.get_by_test_id('chart-tile').nth(1).click(position={'x': 50, 'y': 30})
+        expect(page.get_by_label('筛选模式')).to_have_value('both')
+        expect(page.get_by_label('下限', exact=True)).to_have_value('15')
+        expect(global_panel.get_by_label('筛选值 1')).to_have_value('North')
+        expect(page.get_by_text('加载中…', exact=True)).to_have_count(0)
+        expect(page.locator('.tile-error')).to_have_count(0)
+        expect(page.locator('.chart-view canvas')).to_have_count(2)
+        page.screenshot(path=str(ROOT / 'tests' / 'dashboard-tested.png'), full_page=True)
+        page.on('dialog', lambda dialog: dialog.accept())
+        page.get_by_role('button', name='▦ 新建').click()
+        expect(page.get_by_role('button', name='撤销', exact=True)).to_be_disabled()
+        assert not errors, errors
+        browser.close()
+        print('PASS: paste -> two charts -> global/local filters -> save -> reload -> restore; no browser errors')
+
+if __name__ == '__main__':
+    main()

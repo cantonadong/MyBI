@@ -1,0 +1,160 @@
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Float, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .db import Base
+
+
+def new_id() -> str:
+    return str(uuid4())
+
+
+class ResourceIdentity(Base):
+    __tablename__ = 'resource_identities'
+    __table_args__ = (UniqueConstraint('kind', 'resource_id'), {'sqlite_autoincrement': True})
+    local_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # User-facing ID: numbered per kind (dataset, report, scheduled, portal, user, role…) starting at 1;
+    # rows that existed before keep their earlier number (= local_id).
+    number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    resource_id: Mapped[str] = mapped_column(String(36))
+    fingerprint: Mapped[str] = mapped_column(String(128), unique=True)
+    file_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Dataset(Base):
+    __tablename__ = "datasets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    current_snapshot_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class DatasetSnapshot(Base):
+    __tablename__ = "dataset_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id"))
+    schema_json: Mapped[list] = mapped_column(JSON)
+    row_count: Mapped[int] = mapped_column(Integer)
+    storage_uri: Mapped[str] = mapped_column(String(1000), unique=True)
+    status: Mapped[str] = mapped_column(String(20), default="SUCCEEDED")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class DynamicSource(Base):
+    __tablename__ = 'dynamic_sources'
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id'), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class ScheduledQuery(Base):
+    __tablename__ = 'scheduled_queries'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    config: Mapped[dict] = mapped_column(JSON)
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class SavedConnection(Base):
+    __tablename__ = 'saved_connections'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Dashboard(Base):
+    __tablename__ = 'dashboards'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    document: Mapped[dict] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Portal(Base):
+    """An end-user entry page on the read-only service listing a set of published reports."""
+    __tablename__ = 'portals'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    report_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class DirectoryUser(Base):
+    """Users referenced by roles and report permissions. Kept as a plain list until the company account
+    system is connected; there is no password or login yet."""
+    __tablename__ = 'directory_users'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(255), unique=True)
+    email: Mapped[str] = mapped_column(String(255), default='')
+    department_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # The local account (synced from 个人资料); its username/email are edited there, and it cannot be deleted.
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Department(Base):
+    __tablename__ = 'departments'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class Role(Base):
+    """Members = users added directly + every user in the selected departments."""
+    __tablename__ = 'roles'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    member_ids: Mapped[list] = mapped_column(JSON, default=list)
+    department_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class ReportPermission(Base):
+    """Who may view a report. No row / empty lists = visible to every signed-in user (enforced once login exists)."""
+    __tablename__ = 'report_permissions'
+    report_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    role_ids: Mapped[list] = mapped_column(JSON, default=list)
+    user_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class UserProfile(Base):
+    __tablename__ = 'user_profile'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    display_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(255), default='')
+    avatar: Mapped[str] = mapped_column(String, default='')
+
+
+class PublishedDashboard(Base):
+    __tablename__ = 'published_dashboards'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    document: Mapped[dict] = mapped_column(JSON)
+    theme: Mapped[dict] = mapped_column(JSON)
+
+
+class ChartComment(Base):
+    __tablename__ = 'chart_comments'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dashboard_id: Mapped[str] = mapped_column(String(36), index=True)
+    chart_id: Mapped[str] = mapped_column(String(36), index=True)
+    author: Mapped[str] = mapped_column(String(255))
+    author_id: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
+    avatar: Mapped[str] = mapped_column(String, default='')
+    content: Mapped[str] = mapped_column(String(5000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

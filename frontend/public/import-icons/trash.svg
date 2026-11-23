@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:ev="http://www.w3.org/2001/xml-events" xmlns:xlink="http://www.w3.org/1999/xlink" baseProfile="full" height="24px" version="1.1" viewBox="0 0 24 24" width="24px">
+  <title>trash icon</title>
+  <desc>Editable vector UI design. All text and shapes are native SVG elements. No embedded bitmaps.</desc>
+  <defs/>
+  <g id="icon-trash-0-0" transform="translate(0,0) scale(1.0)">
+    <path d="M4 7h16 M9 7V4h6v3 M7 7l1 14h8l1-14 M10 11v6 M14 11v6" fill="none" stroke="#182339" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/>
+  </g>
+</svg>
