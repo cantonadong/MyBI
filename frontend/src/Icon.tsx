@@ -22,6 +22,7 @@ const paths: Record<string, string> = {
   undo: 'M9 5 3 11l6 6M3 11h11a6 6 0 0 1 6 6',
   redo: 'm15 5 6 6-6 6m6-6H10a6 6 0 0 0-6 6',
   upload: 'M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6',
+  download: 'M12 3v13m-5-5 5 5 5-5M4 15v6h16v-6',
   close: 'm6 6 12 12M6 18 18 6',
   kpi: 'M3 5h18v14H3zM7 10h3v5m4-5h3l-3 5h3',
   table: 'M3 4h18v16H3zM3 9h18M3 14h18M9 4v16',

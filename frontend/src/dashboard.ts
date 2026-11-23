@@ -13,7 +13,7 @@ export type Tile = { id: string; tabId?: string; datasetId: string; config: Char
 export type ReportTab = { id: string; name: string };
 export type CanvasGrid = { columns: number; rows: number };
 export type InsertSide = 'left' | 'right' | 'top' | 'bottom';
-export type Document = { rowScale?: number; colScale?: number; tabs?: ReportTab[]; showGuides?: boolean; guideType?: 'quarters' | 'thirds'; canvasWidth?: number; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
+export type Document = { titleNoDimension?: boolean; rowScale?: number; colScale?: number; tabs?: ReportTab[]; showGuides?: boolean; guideType?: 'quarters' | 'thirds'; canvasWidth?: number; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
 export type SavedReport = { id: string; pages?: number; published?: boolean; storage_path?: string; local_id?: number; fingerprint?: string; name: string; owner?: string | null; updated_at?: string | null };
 export function chartTitle(config: ChartConfig, dataset?: Dataset, filters: Filter[] = [], locale = getChartLocale()): string {
   if (config.type === 'filter') return config.title || ''; // shown exactly as set in the properties sidebar
@@ -27,7 +27,7 @@ export function chartTitle(config: ChartConfig, dataset?: Dataset, filters: Filt
     return label(field) + (method === 'sum' || ['scatter', 'histogram', 'boxplot', 'candlestick'].includes(config.type) ? '' : ` (${method})`);
   }).join(', ');
   const dimensions = (['kpi', 'gauge', 'histogram'].includes(config.type) ? [] : multiple && config.type !== 'candlestick' ? config.dimensions || [config.dimension] : [config.dimension]).filter((field): field is string => !!field).map(label).join(', ');
-  const title = config.autoTitle === false ? config.title || '' : metrics ? metrics + (dimensions ? ' by ' + dimensions : '') : config.title || '';
+  const title = config.autoTitle === false ? config.title || '' : metrics ? metrics + (dimensions && !config.titleNoDimension ? ' by ' + dimensions : '') : config.title || '';
   const selections = filters.flatMap(filter => {
     const field = dataset?.schema.find(field => field.name === filter.field && ['string', 'date'].includes(field.type));
     if (!filter.inTitle || !field || !['in', 'date_between'].includes(filter.op)) return [];

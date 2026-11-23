@@ -267,9 +267,16 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     if (dates.length && (ascending || descending)) {
       const minimum = Math.min(...dates), maximum = Math.max(...dates);
       const chronological = dates.map((date: number, index: number) => ({ date, index })).sort((a: any, b: any) => a.date - b.date);
+      // The last point stands for its whole bucket (e.g. 10-01 = all of October), so annotations starting inside it still show.
+      const lastBucketEnd = maximum + Math.max(0, chronological.length > 1 ? maximum - chronological[chronological.length - 2].date - 864e5 : 0);
       const positionAt = (date: number) => {
         const index = chronological.findIndex((item: any) => item.date >= date);
-        if (index <= 0) return chronological[index < 0 ? chronological.length - 1 : 0].index;
+        if (index < 0) {
+          // Past the last point: continue at the last spacing, so 10-07 sits inside the October bucket.
+          const last = chronological[chronological.length - 1], before = chronological[chronological.length - 2];
+          return before && last.date > before.date ? last.index + (last.index - before.index) * (date - last.date) / (last.date - before.date) : last.index;
+        }
+        if (index === 0) return chronological[0].index;
         const before = chronological[index - 1], after = chronological[index];
         return before.index + (after.index - before.index) * (date - before.date) / (after.date - before.date);
       };
@@ -277,11 +284,11 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
       const spans = c.annotations.flatMap((item, index) => {
         const single = item.start && item.start === item.end;
         const start = item.start ? Date.parse(item.start) : minimum, end = c.annotationStyle === 'start' ? start : item.end ? Date.parse(item.end) : maximum;
-        if (end < minimum || start > maximum) return [];
+        if (end < minimum || start > lastBucketEnd) return [];
         const edge = single && c.annotationStyle !== 'start' ? 0 : .5 * (ascending ? 1 : -1);
         const sharedStart = item.start && c.annotations!.some(other => other !== item && (c.annotationStyle === 'start' ? (!other.start || other.start <= item.start!) && (!other.end || other.end >= item.start!) : other.end === item.start));
         const sharedEnd = item.end && c.annotations!.some(other => other !== item && other.start === item.end);
-        const from = positionAt(Math.max(minimum, start)) - (sharedStart ? 0 : edge), to = c.annotationStyle === 'start' ? from : positionAt(Math.min(maximum, end)) + (sharedEnd ? 0 : edge);
+        const from = positionAt(Math.max(minimum, start)) - (sharedStart ? 0 : edge), to = c.annotationStyle === 'start' ? from : positionAt(Math.min(lastBucketEnd, end)) + (sharedEnd ? 0 : edge);
         return [{ ...item, startBoundary: start, endBoundary: end, from: Math.min(from, to), to: Math.max(from, to), color: chartColors(c)[index % chartColors(c).length], lane: 0 }];
       }).sort((a, b) => a.from - b.from || a.to - b.to);
       spans.forEach(span => {
@@ -304,7 +311,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
             const coordinate = (position: number) => Math.max(grid.x, Math.min(grid.x + grid.width, first + position * step));
             if (c.annotationStyle === 'start' || span.start && span.start === span.end) {
               const date = span.start ? Date.parse(span.start) : NaN;
-              if (!Number.isFinite(date) || date < minimum || date > maximum) return { type: 'group', children: [] };
+              if (!Number.isFinite(date) || date < minimum || date > lastBucketEnd) return { type: 'group', children: [] };
               const x = coordinate(c.annotationStyle === 'start' ? span.from : positionAt(date));
               return { type: 'group', children: [
                 { type: 'line', shape: { x1: x, x2: x, y1: grid.y, y2: grid.y + grid.height }, style: { stroke: span.color, lineWidth: 1, lineDash: [4, 3] } },
@@ -312,8 +319,8 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
               ] };
             }
             const leftBound = ascending ? span.startBoundary : span.endBoundary, rightBound = ascending ? span.endBoundary : span.startBoundary;
-            const x = leftBound >= minimum && leftBound <= maximum ? coordinate(span.from) : grid.x;
-            const right = rightBound >= minimum && rightBound <= maximum ? coordinate(span.to) : grid.x + grid.width;
+            const x = leftBound >= minimum && leftBound <= lastBucketEnd ? coordinate(span.from) : grid.x;
+            const right = rightBound >= minimum && rightBound <= lastBucketEnd ? coordinate(span.to) : grid.x + grid.width;
             const width = right - x, top = 8 + span.lane * laneHeight;
             const children: any[] = [{ type: 'rect', shape: { x, y: grid.y, width, height: grid.height }, style: { fill: span.color, opacity: .09 } }];
             if (span.lane < visibleLanes) children.push(
@@ -321,7 +328,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
               { type: 'text', style: { x: x + width / 2, y: top + 10, text: span.label, fill: span.color, fontSize: 12, fontWeight: 600, align: 'center', verticalAlign: 'middle', width: Math.max(0, width - 8), overflow: 'truncate' } },
             );
             for (const [bound, boundaryX] of [[ascending ? span.start : span.end, x], [ascending ? span.end : span.start, right]] as const) {
-              if (bound && Date.parse(bound) >= minimum && Date.parse(bound) <= maximum) children.push({ type: 'line', shape: { x1: boundaryX, x2: boundaryX, y1: grid.y, y2: grid.y + grid.height }, style: { stroke: span.color, lineWidth: 1, lineDash: [4, 3], opacity: .7 } });
+              if (bound && Date.parse(bound) >= minimum && Date.parse(bound) <= lastBucketEnd) children.push({ type: 'line', shape: { x1: boundaryX, x2: boundaryX, y1: grid.y, y2: grid.y + grid.height }, style: { stroke: span.color, lineWidth: 1, lineDash: [4, 3], opacity: .7 } });
             }
             return { type: 'group', children };
           },

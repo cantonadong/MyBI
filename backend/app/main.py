@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.datasets import router as datasets_router
 from .db import Base, engine
 from .api.dashboards import router as dashboards_router
+from .api.report_bundle import router as report_bundle_router
 from .api.profile import router as profile_router
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
@@ -94,6 +95,7 @@ with engine.begin() as connection:
     if 'department_ids' not in {column['name'] for column in inspect(connection).get_columns('roles')}:
         connection.execute(text("ALTER TABLE roles ADD COLUMN department_ids JSON NOT NULL DEFAULT '[]'"))
 app.include_router(datasets_router)
+app.include_router(report_bundle_router)
 app.include_router(dashboards_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
