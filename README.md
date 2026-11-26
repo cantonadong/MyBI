@@ -1,4 +1,4 @@
-# MyBI v1.5
+# MyBI v1.6
 
 A local visual report builder for Windows, with Simplified Chinese and English UI.
 
@@ -8,8 +8,8 @@ Two packages are available for Windows 10/11 x64. Both include the Rust + Slint 
 
 | Package | Runtime dependencies |
 | --- | --- |
-| `MyBI-v1.5-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
-| `MyBI-v1.5-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
+| `MyBI-v1.6-Windows-x64-Portable.zip` | Includes Python and backend dependencies. Extract the entire folder and double-click `MyBI.exe`. No Python or Node.js installation needed. |
+| `MyBI-v1.6-Windows-x64.zip` | No Python environment included. Install Python 3.13 x64, then run the commands below in the extracted folder. Internet access is needed for the initial dependency download. |
 
 ```powershell
 py -3.13 -m venv .venv
@@ -91,7 +91,7 @@ The manager starts Python directly and keeps stdout/stderr in `data/logs`, witho
 
 After pulling updates on another computer, rerun `npm.cmd --prefix frontend ci` and `./scripts/build.ps1` to refresh both the web build and `MyBI.exe`. Commit `frontend/package-lock.json` and `desktop/Cargo.lock` with dependency changes. Generated executables, `frontend/dist`, runtimes, databases and imported snapshots are local files and are not synchronized by Git.
 
-Tests are not run by the build script. v1.5 was built and packaged without running the test suite.
+Tests are not run by the build script. v1.6 was built and packaged without running the test suite.
 
 ## License
 

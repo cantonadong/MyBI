@@ -1,10 +1,11 @@
 import { getChartLocale, translate } from '../i18n';
 import type { ChartConfig } from './registry';
-import { formatValue as valueString, chartLegend } from './registry';
-import { formatChartField as fieldValue, metricFormat, parseCategoryOrder, type FieldFormat } from '../fieldDisplay';
+import { baselineAxisCharts, formatValue as valueString, chartLegend } from './registry';
+import { formatChartField as fieldValue, formatBaseline, metricFormat, parseCategoryOrder, type FieldFormat } from '../fieldDisplay';
 import { chartColors } from './palettes';
 export type Row = Record<string, unknown>;
 const categoryName = (value: unknown) => value == null ? 'NULL' : String(value);
+const fieldLabel = (config: ChartConfig, name: string) => config.fieldLabels?.[name] || name;
 function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' | 'zh-CN'): any {
   const formatField = (value: unknown, format?: FieldFormat) => fieldValue(value, format, locale);
   const formatValue = (value: number, format: ChartConfig['format']) => valueString(value, format, locale);
@@ -19,10 +20,10 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
   const label = { show: c.labels };
   if (c.type === 'candlestick') return { ...base, ...cart, yAxis: { ...cart.yAxis, scale: true }, series: [{ type: 'candlestick', name: c.title, data: rows.map(row => (c.measures || []).map(field => row[field] == null ? null : Number(row[field]))), itemStyle: { color: colors[0], color0: colors[1], borderColor: colors[0], borderColor0: colors[1] } }] };
   if (c.type === 'pie') return { ...base, series: [{ type: 'pie', radius: c.donut ? ['40%', '70%'] : '70%', data: named, label }] };
-  if (c.type === 'gauge') return { ...base, series: [{ type: 'gauge', max: Math.max(100, ...values), data: [{ value: values[0] || 0, name: m }] }] };
-  if (c.type === 'funnel') return { ...base, series: [{ type: 'funnel', data: named, label }] };
-  if (c.type === 'radar') return { ...base, radar: { indicator: names.map(name => ({ name, max: Math.max(1, ...values) * 1.2 })) }, series: [{ type: 'radar', label, data: [{ name: m, value: values }] }] };
-  if (c.type === 'scatter') { const groups = c.legendField ? [...new Set(rows.map(row => row[c.legendField!]))] : [undefined]; return { ...base, xAxis: { type: 'value', name: d }, yAxis: { type: 'value', name: m }, series: groups.map(group => ({ name: c.legendField ? JSON.stringify(group) : m, _displayName: c.legendField ? groupName(group) : m, type: 'scatter', label, data: rows.filter(row => !c.legendField || row[c.legendField] === group).map(r => [Number(r[d]), Number(r[m]), Number(r[m2] || 10)]), symbolSize: (v: number[]) => m2 ? Math.max(5, Math.min(60, Math.sqrt(Math.abs(v[2])))) : 12 })) }; }
+  if (c.type === 'gauge') return { ...base, series: [{ type: 'gauge', max: Math.max(100, ...values), data: [{ value: values[0] || 0, name: fieldLabel(c, m) }] }] };
+  if (c.type === 'funnel') return { ...base, series: [{ type: 'funnel', sort: 'none', data: named, label }] };
+  if (c.type === 'radar') return { ...base, radar: { indicator: names.map(name => ({ name, max: Math.max(1, ...values) * 1.2 })) }, series: [{ type: 'radar', label, data: [{ name: fieldLabel(c, m), value: values }] }] };
+  if (c.type === 'scatter') { const groups = c.legendField ? [...new Set(rows.map(row => row[c.legendField!]))] : [undefined]; return { ...base, xAxis: { type: 'value', name: fieldLabel(c, d) }, yAxis: { type: 'value', name: fieldLabel(c, m) }, series: groups.map(group => ({ name: c.legendField ? JSON.stringify(group) : m, _displayName: c.legendField ? groupName(group) : fieldLabel(c, m), type: 'scatter', label, data: rows.filter(row => !c.legendField || row[c.legendField] === group).map(r => [Number(r[d]), Number(r[m]), Number(r[m2] || 10)]), symbolSize: (v: number[]) => m2 ? Math.max(5, Math.min(60, Math.sqrt(Math.abs(v[2])))) : 12 })) }; }
   if (c.type === 'heatmap') { const xs = [...new Set(names)], ys = [...new Set(rows.map(r => categoryName(r[d2])))]; return { ...base, grid: cart.grid, xAxis: { type: 'category', data: xs }, yAxis: { type: 'category', data: ys }, visualMap: { min: Math.min(...values), max: Math.max(...values), bottom: 0 }, series: [{ type: 'heatmap', data: rows.map(r => [xs.indexOf(categoryName(r[d])), ys.indexOf(categoryName(r[d2])), Number(r[m])]), label }] }; }
   if (c.type === 'sankey') {
     if (!d2) throw new Error(t("桑基图需要第二维度作为目标节点"));
@@ -47,7 +48,7 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
   const series: any[] = metrics.map((metric, index) => {
     const type = c.type === 'mixed' ? (c.metricSeries?.[index] || c.mixedSeries?.[metric])?.type || (index ? 'line' : 'bar') : ['line', 'area'].includes(c.type) ? 'line' : 'bar';
     const axisIndex = ['mixed', 'line'].includes(c.type) && (c.metricSeries?.[index] || c.mixedSeries?.[metric])?.axis === 'right' ? 1 : 0;
-    return { name: metrics.indexOf(metric) !== metrics.lastIndexOf(metric) ? JSON.stringify([index, metric]) : metric, _displayName: metric, _field: metric, type, ...(['mixed', 'line'].includes(c.type) ? { [c.horizontal ? 'xAxisIndex' : 'yAxisIndex']: axisIndex } : {}), data: rows.map(row => row[metric] == null ? null : Number(row[metric])), smooth: c.smooth, areaStyle: c.type === 'area' ? {} : undefined, stack: c.stacked ? c.type === 'mixed' ? type === 'bar' ? `bar-${axisIndex}` : undefined : c.type === 'line' ? `line-${axisIndex}` : 'total' : undefined, label };
+    return { name: metrics.indexOf(metric) !== metrics.lastIndexOf(metric) ? JSON.stringify([index, metric]) : metric, _displayName: fieldLabel(c, metric), _field: metric, type, ...(['mixed', 'line'].includes(c.type) ? { [c.horizontal ? 'xAxisIndex' : 'yAxisIndex']: axisIndex } : {}), data: rows.map(row => row[metric] == null ? null : Number(row[metric])), smooth: c.smooth, areaStyle: c.type === 'area' ? {} : undefined, stack: c.stacked ? c.type === 'mixed' ? type === 'bar' ? `bar-${axisIndex}` : undefined : c.type === 'line' ? `line-${axisIndex}` : 'total' : undefined, label };
   });
   if (['bar', 'line', 'area'].includes(c.type)) cart.yAxis = { ...cart.yAxis, min: c.axisSettings?.left?.min, max: c.axisSettings?.left?.max };
   if (c.type === 'mixed' || (c.type === 'line' && metrics.some((metric, index) => (c.metricSeries?.[index] || c.mixedSeries?.[metric])?.axis === 'right'))) {
@@ -67,12 +68,16 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
     const exclusiveGroups = indexed.size === categories.length;
     const templates = [...series];
     series.splice(0, series.length);
-    groups.forEach(group => templates.forEach((template) => series.push({ ...template, ...(exclusiveGroups && template.type === 'bar' && !template.stack ? { stack: JSON.stringify(['legend', template.name]) } : {}), name: JSON.stringify([group, template.name]), _displayName: groupName(group) + (metrics.length > 1 ? ' · ' + template.name : ''), data: categories.map(category => indexed.get(JSON.stringify([category, group]))?.[template._field] ?? null) })));
+    // Several stacked metrics split by a legend field: each legend value gets its own stack (one bar per group made of
+    // the metrics) instead of piling every group onto one bar. A single metric still stacks the groups together.
+    const stackPerGroup = metrics.length > 1 && !exclusiveGroups;
+    groups.forEach(group => templates.forEach((template, index) => series.push({ ...template, name: JSON.stringify([group, template.name]), ...(exclusiveGroups && template.type === 'bar' && !template.stack ? { stack: JSON.stringify(['legend', template.name]) } : stackPerGroup && template.stack ? { stack: JSON.stringify([template.stack, group]), name: template.name, _legendName: template._displayName, _keepColor: true, itemStyle: { ...template.itemStyle, color: colors[index % colors.length] } } : {}), _displayName: groupName(group) + (metrics.length > 1 ? ' · ' + template._displayName : ''), data: categories.map(category => indexed.get(JSON.stringify([category, group]))?.[template._field] ?? null) })));
     cart.xAxis = { ...cart.xAxis, data: categories.map(value => String(value ?? 'NULL')) };
   }
   if (c.type === 'mixed') {
     series.sort((a, b) => Number(a.type === 'line') - Number(b.type === 'line'));
     series.forEach((item, index) => {
+      if (item._keepColor) return;
       const color = colors[index % colors.length];
       item.itemStyle = { ...item.itemStyle, color };
       if (item.type === 'line') item.lineStyle = { ...item.lineStyle, color };
@@ -82,6 +87,7 @@ function buildOption(c: ChartConfig, rows: Row[], mapName: string, locale: 'en' 
 }
 
 export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map', size: { width: number; height: number; measureText?: (text: string) => number } = { width: 600, height: 300 }): any {
+  const showLabels = c.labels ?? true;
   const locale = c.locale || getChartLocale();
   const formatField = (value: unknown, format?: FieldFormat) => fieldValue(value, format, locale);
   const formatValue = (value: number, format: ChartConfig['format']) => valueString(value, format, locale);
@@ -121,12 +127,28 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   const option = buildOption(c, rows, mapName, locale);
   const legendObjects = ['pie', 'funnel'].includes(c.type) ? option.series[0].data : option.series;
   option.legend.show = chartLegend(c, new Set(legendObjects.map((item: any) => item.name).filter((name: unknown) => name != null)).size);
+  if (c.type === 'funnel') option.legend.data = [...new Set(legendObjects.map((stage: { name: string }) => stage.name))];
+  const verticalFunnelLegend = c.type === 'funnel' && c.legendOrient === 'vertical' && option.legend.show;
+  if (verticalFunnelLegend) {
+    const width = Math.min(152, Math.floor(size.width * 0.36));
+    option.legend = {
+      ...option.legend, type: 'scroll', orient: 'vertical', right: 8, top: 'middle', height: '85%', align: 'left', padding: 0, itemWidth: 14,
+      // ECharts centers the text box on the icon. Anchor a one-line box and let wrapped lines flow below it.
+      textStyle: { width: Math.max(1, width - 20), overflow: 'break', rich: {}, height: 16, lineHeight: 16 },
+    };
+    Object.assign(option.series[0], { left: 12, right: width + Math.min(54, Math.floor(size.width / 4)), top: 16, bottom: 16 });
+  }
   if (originalHeatmapY) {
     option.series[0].data.forEach((point: number[]) => { point[1] = originalHeatmapY.indexOf(option.yAxis.data[point[1]]); });
     option.yAxis.data = originalHeatmapY;
   }
-  const seriesNames = new Map<string, string>(option.series.map((series: any) => [series.name, series._displayName || series.name]));
-  option.legend.formatter = (name: string) => seriesNames.get(name) || name;
+  // One legend entry per metric when grouped stacks share metric colours; tooltips still name the group.
+  const seriesNames = new Map<string, string>(option.series.map((series: any) => [series.name, series._legendName || series._displayName || series.name]));
+  const tooltipNames: string[] = option.series.map((series: any) => series._displayName || series.name);
+  option.legend.formatter = (name: string) => {
+    const text = seriesNames.get(name) || name;
+    return verticalFunnelLegend ? text.replace(/\{(?=[a-zA-Z0-9_]+\|[^}]*\})/g, '{\u2060') : text;
+  };
   const primary = c.measure || '', dimension = c.dimension || '';
   const formatted = (value: unknown, field: string) => c.fieldFormats ? formatField(value, c.fieldFormats[field]) : value == null ? 'NULL' : typeof value === 'number' ? formatValue(value, c.format) : String(value);
   const metricValue = (value: unknown, field: string) => metricFormat(c, field) ? formatField(value, metricFormat(c, field)) : formatted(value, field);
@@ -141,6 +163,30 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     const divisor = { k: 1e3, m: 1e6, b: 1e9 }[unit];
     return formatField(value / divisor, { kind: 'decimal', format: 'number', decimals: c.labelUnitDecimals || 1, rounding: format?.rounding }) + unit.toUpperCase();
   };
+  // Value axes follow the data label unit (K / M / B). "Auto" picks one unit per axis from the largest plotted value,
+  // so every tick shares it; ticks and percentages drop trailing zeros (10% rather than 10.0%).
+  const trimZeros = (text: string) => text.replace(/\.(\d*?)0+(?!\d)/, (_match, digits: string) => digits ? '.' + digits : '');
+  const axisUnits = new Map<string, string>();
+  const axisUnit = (field: string) => {
+    const setting = c.labelUnit || 'auto';
+    if (setting !== 'auto') return setting;
+    if (!axisUnits.has(field)) {
+      const totals = new Map<string, number>();
+      rows.forEach(row => { const value = Number(row[field]); if (!Number.isFinite(value)) return; const key = c.stacked ? String(row[dimension]) : String(totals.size); totals.set(key, (totals.get(key) || 0) + Math.abs(value)); });
+      const magnitude = Math.max(0, ...totals.values());
+      axisUnits.set(field, magnitude >= 1e9 ? 'b' : magnitude >= 1e6 ? 'm' : magnitude >= 1e3 ? 'k' : 'none');
+    }
+    return axisUnits.get(field)!;
+  };
+  const axisValue = (value: number, field: string) => {
+    const format = metricFormat(c, field);
+    const percent = format?.format === 'percent' || (!format && c.format === 'percent');
+    const unit = percent || typeof value !== 'number' ? 'none' : axisUnit(field);
+    if (unit === 'none') { const text = metricValue(value, field); return percent ? trimZeros(text) : text; }
+    if (value === 0) return '0';
+    const divisor = { k: 1e3, m: 1e6, b: 1e9 }[unit as 'k' | 'm' | 'b'];
+    return trimZeros(formatField(value / divisor, { kind: 'decimal', format: 'number', decimals: Math.max(c.labelUnitDecimals || 1, 3), rounding: format?.rounding })) + unit.toUpperCase();
+  };
   const cartesian = ['bar', 'line', 'area', 'mixed'].includes(c.type);
   const count = Math.max(1, ...option.series.map((series: any) => series.data?.length || 1));
   const metricCount = cartesian ? option.series.length : 1;
@@ -153,9 +199,9 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
   const numberAxis = c.horizontal ? option.xAxis : option.yAxis;
   if (Array.isArray(numberAxis)) numberAxis.forEach((axis, index) => {
     const field = option.series.find((series: any) => series[c.horizontal ? 'xAxisIndex' : 'yAxisIndex'] === index)?._field || primary;
-    axis.axisLabel = { formatter: (value: number) => metricValue(value, field) };
+    axis.axisLabel = { formatter: (value: number) => axisValue(value, field) };
   });
-  if (numberAxis?.type === 'value') numberAxis.axisLabel = { ...numberAxis.axisLabel, formatter: (value: number) => c.type === 'histogram' ? formatField(value, { kind: 'integer', format: 'number', decimals: 0 }) : metricValue(value, primary) };
+  if (numberAxis?.type === 'value') numberAxis.axisLabel = { ...numberAxis.axisLabel, formatter: (value: number) => c.type === 'histogram' ? formatField(value, { kind: 'integer', format: 'number', decimals: 0 }) : axisValue(value, primary) };
   const categoryAxis = c.horizontal ? option.yAxis : option.xAxis;
   if (categoryAxis?.type === 'category' && c.type !== 'histogram') categoryAxis.axisLabel = { ...categoryAxis.axisLabel, formatter: (value: unknown) => category(value, dimension) };
   if (c.type === 'scatter') {
@@ -202,7 +248,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     const labelIndices = c.labelLimit ? new Set(series.data.map((value: unknown, index: number) => value == null ? -1 : index).filter((index: number) => index >= 0).slice(0, c.labelLimit)) : undefined;
     const field = series._field || primary;
     delete series._field;
-    delete series._displayName;
+    delete series._displayName; delete series._legendName; delete series._keepColor;
     const valueText = (value: any, label = false): string => {
       const metric = label ? labelValue : metricValue;
       if (c.type === 'histogram') return label ? labelValue(value, field) : formatField(value, { kind: 'integer', format: 'number', decimals: 0 });
@@ -217,23 +263,23 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     };
     series.tooltip = { ...series.tooltip, valueFormatter: (value: any) => valueText(value) };
     if (c.type === 'candlestick') series.tooltip.formatter = (params: any) => category(params.name, dimension) + '\n' + ['开盘', '收盘', '最低', '最高'].map((label, index) => translate(locale, label) + ': ' + metricValue(params.data[index], c.measures?.[index] || primary)).join('\n');
-    if (cartesian) series.tooltip.formatter = (params: any) => category(params.name, dimension) + '\n' + (seriesNames.get(params.seriesName) || params.seriesName) + ': ' + valueText(params.value);
+    if (cartesian) series.tooltip.formatter = (params: any) => category(params.name, dimension) + '\n' + (tooltipNames[params.seriesIndex] ?? params.seriesName) + ': ' + valueText(params.value);
     if (c.type === 'scatter') series.tooltip.formatter = (params: any) => [
-      ...(c.legendField ? [seriesNames.get(params.seriesName) || params.seriesName] : []),
-      dimension + ': ' + formatted(params.value[0], dimension),
-      field + ': ' + formatted(params.value[1], field),
-      ...(c.secondMeasure ? [c.secondMeasure + ': ' + formatted(params.value[2], c.secondMeasure)] : []),
+      ...(c.legendField ? [tooltipNames[params.seriesIndex] ?? params.seriesName] : []),
+      fieldLabel(c, dimension) + ': ' + formatted(params.value[0], dimension),
+      fieldLabel(c, field) + ': ' + formatted(params.value[1], field),
+      ...(c.secondMeasure ? [fieldLabel(c, c.secondMeasure) + ': ' + formatted(params.value[2], c.secondMeasure)] : []),
     ].join('\n');
     series.labelLayout = labelPosition ? { hideOverlap } : cartesian || c.type === 'scatter' ? layoutLabel : { ...series.labelLayout, moveOverlap: c.horizontal ? 'shiftX' : 'shiftY', hideOverlap };
     series.labelLine = { ...series.labelLine, show: true, lineStyle: { ...series.labelLine?.lineStyle, color: '#8790a4', width: 1 } };
-    series.label = { ...series.label, ...labelStyle, show: ['tree', 'treemap', 'sunburst'].includes(c.type) ? c.labels ?? true : c.type === 'pie' && (c.piePercent ?? c.legendPercent) ? true : c.labels, ...(labelPosition ? { position: labelPosition } : series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
+    series.label = { ...series.label, ...labelStyle, show: showLabels, ...(labelPosition ? { position: labelPosition } : series.type === 'bar' ? { position: 'outside' } : {}), formatter: (params: any) => {
       if (labelIndices && !labelIndices.has(params.dataIndex)) return '';
       if ((cartesian || (c.labelDensity && c.labelDensity !== 'auto')) && (params.dimensionIndex ?? params.dataIndex) % stride !== 0) return '';
-      if (['tree', 'treemap', 'sunburst'].includes(c.type)) return c.labels ? params.name + ': ' + valueText(params.value, true) : params.name;
+      if (['tree', 'treemap', 'sunburst'].includes(c.type)) return showLabels ? params.name + ': ' + valueText(params.value, true) : params.name;
       if (c.type === 'pie' && (c.piePercent ?? c.legendPercent)) return `${valueText(params.value, true)} (${formatField(Number(params.percent || 0) / 100, { kind: 'decimal', format: 'percent', decimals: 1 })})`;
       return valueText(params.value, true);
     } };
-    if (c.type === 'candlestick' && c.labels) {
+    if (c.type === 'candlestick' && showLabels) {
       const candleStride = !c.labelDensity || c.labelDensity === 'auto' ? Math.max(1, Math.ceil(series.data.length * (textWidth + 20) / Math.max(1, size.width - 95))) : stride;
       series.markPoint = {
         silent: true, symbol: 'circle', symbolSize: 0,
@@ -241,7 +287,7 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
         data: series.data.flatMap((values: (number | null)[], index: number) => index % candleStride || (labelIndices && !labelIndices.has(index)) || values.some(value => value === null || !Number.isFinite(value)) ? [] : values.map((value, metricIndex) => ({ coord: [index, value], value, name: c.measures?.[metricIndex] || primary }))),
       };
     }
-    if (c.type === 'waterfall' && c.labels) {
+    if (c.type === 'waterfall' && showLabels) {
       const renderItem = series.renderItem;
       series.renderItem = (params: any, api: any) => {
         const shape = renderItem(params, api);
@@ -257,11 +303,31 @@ export function optionFor(c: ChartConfig, rows: Row[], mapName = 'dashboard-map'
     option.tooltip = { ...option.tooltip, trigger: 'axis', axisPointer: { axis, type: 'line' }, formatter: (items: any[]) => {
       if (!items.length) return '';
       const heading = c.type === 'histogram' ? items[0].axisValueLabel : category(items[0].axisValue, dimension);
-      return [heading, ...items.map(item => (seriesNames.get(item.seriesName) || item.seriesName) + ': ' + option.series[item.seriesIndex].tooltip.valueFormatter(item.value))].join('\n');
+      return [heading, ...items.map(item => (tooltipNames[item.seriesIndex] ?? item.seriesName) + ': ' + option.series[item.seriesIndex].tooltip.valueFormatter(item.value))].join('\n');
     } };
   }
+  if (c.baselines?.length && baselineAxisCharts.includes(c.type) && option.xAxis && option.yAxis) {
+    const series = option.series.find((item: any) => item._field === c.measure) || option.series[0];
+    const horizontal = option.yAxis.type === 'category';
+    const axes = horizontal ? option.xAxis : option.yAxis;
+    const axis = Array.isArray(axes) ? axes[(horizontal ? series.xAxisIndex : series.yAxisIndex) || 0] : axes;
+    if (axis?.type === 'value') {
+      const values = c.baselines.map(baseline => baseline.value);
+      axis.dataMin = Math.min(...values);
+      axis.dataMax = Math.max(...values);
+      series.markLine = {
+        symbol: 'none', precision: -1,
+        tooltip: { show: true, trigger: 'item', formatter: ({ name }: { name: string }) => name },
+        lineStyle: { color: '#64728a', type: 'dashed' },
+        label: { show: true, position: 'insideEndTop', formatter: ({ name }: { name: string }) => name },
+        data: c.baselines.map(baseline => ({ [horizontal ? 'xAxis' : 'yAxis']: baseline.value, name: formatBaseline(baseline, locale) })),
+      };
+    }
+  }
   if (c.annotations?.length && option.xAxis?.type === 'category' && !c.horizontal) {
-    const dates = option.xAxis.data.map((value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value) ? Date.parse(value.slice(0, 10)) : NaN);
+    // Day or month categories (2026-01-15, 2026/1/15, 2026-01): a month stands for its first day, so daily
+    // annotations still land inside the month bucket on monthly charts.
+    const dates = option.xAxis.data.map((value: unknown) => { const match = typeof value === 'string' ? /^\s*(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?(?:\s*$|[T ])/.exec(value) : null; return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3] || 1)) : NaN; });
     const ascending = dates.every((value: number, index: number) => Number.isFinite(value) && (!index || value >= dates[index - 1]));
     const descending = dates.every((value: number, index: number) => Number.isFinite(value) && (!index || value <= dates[index - 1]));
     if (dates.length && (ascending || descending)) {

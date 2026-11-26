@@ -7,7 +7,7 @@ import { Icon } from './Icon';
 import type { AnnotationRole } from './AnnotationImport';
 
 type SettingField = { name: string; type: string; source?: string };
-export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, busy = false, readOnly = false, defaultDecimals = 1, defaultRounding = 'halfExpand', onChange, onRename, onReorder, onEditValues, onRemove, annotationRoles, onAnnotationRole, preserveOrder = false, configuration = !!onRename }: {
+export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, busy = false, readOnly = false, defaultDecimals = 1, defaultRounding = 'halfExpand', onChange, onRename, onReorder, onEditValues, onRemove, annotationRoles, onAnnotationRole, preserveOrder = false, configuration = !!onRename, search = '' }: {
   schema: SettingField[]; rows: Record<string, unknown>[]; typeIssues?: Record<string, string[]>; formats?: FieldFormats; busy?: boolean; readOnly?: boolean; defaultDecimals?: number; defaultRounding?: FieldFormat['rounding'];
   onChange: (field: string, type: string, format: FieldFormat) => void;
   onRename?: (index: number, name: string) => void;
@@ -16,6 +16,7 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
   onAnnotationRole?: (index: number, role: AnnotationRole) => void;
   onReorder?: (schema: SettingField[]) => void;
   configuration?: boolean;
+  search?: string;
   preserveOrder?: boolean;
   onEditValues?: (field: string) => void;
 }) {
@@ -26,7 +27,10 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
   const positions = useRef(new Map<string, number>());
   const ordered = preserveOrder ? schema : [...schema].sort((a, b) => Number(['number', 'integer'].includes(a.type)) - Number(['number', 'integer'].includes(b.type)));
   const [requestedPage, setPage] = useState(0);
-  const page = Math.min(requestedPage, Math.max(0, Math.ceil(ordered.length / 10) - 1));
+  const query = ordered.length > 10 ? search.trim().toLowerCase() : '';
+  const visible = query ? ordered.filter(field => field.name.toLowerCase().includes(query) || field.source?.toLowerCase().includes(query)) : ordered;
+  const page = Math.min(requestedPage, Math.max(0, Math.ceil(visible.length / 10) - 1));
+  useLayoutEffect(() => setPage(0), [query]);
   const dimensionCount = ordered.filter(field => !['number', 'integer'].includes(field.type)).length;
   useLayoutEffect(() => {
     table.current?.querySelectorAll<HTMLTableRowElement>('tbody tr').forEach(row => {
@@ -48,12 +52,12 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
     });
     onReorder?.(next);
   };
-  return <div className="field-settings-scroll" tabIndex={0} aria-label={t("字段配置与样本预览")}><table ref={table} className={`field-settings-table${annotationRoles ? ' annotation-fields' : ''}${configuration ? ' field-settings-numbered' : ''}`}><thead><tr>{configuration && <th>{t('序号')}</th>}{configuration && <th>{t("源字段")}</th>}{annotationRoles && <th>{t("标注字段")}</th>}<th>{configuration ? t("展示名称") : t("字段")}</th><th>{t("数据类型")}</th><th>{t("格式")}</th><th>{t("小数位")}</th>{Array.from({ length: configuration ? 1 : 5 }, (_, i) => <th key={i}>{configuration ? t("数据") : t("样本 {0}", i + 1)}</th>)}</tr></thead><tbody>{ordered.slice(page * 10, (page + 1) * 10).map((field, row) => {
-    const position = page * 10 + row;
+  return <div className="field-settings-scroll" tabIndex={0} aria-label={t("字段配置与样本预览")}><table ref={table} className={`field-settings-table${annotationRoles ? ' annotation-fields' : ''}${configuration ? ' field-settings-numbered' : ''}`}><thead><tr>{configuration && <th>{t('序号')}</th>}{configuration && <th>{t("源字段")}</th>}{annotationRoles && <th>{t("标注字段")}</th>}<th>{configuration ? t("展示名称") : t("字段")}</th><th>{t("数据类型")}</th><th>{t("格式")}</th><th>{t("小数位")}</th>{Array.from({ length: configuration ? 1 : 5 }, (_, i) => <th key={i}>{configuration ? t("数据") : t("样本 {0}", i + 1)}</th>)}</tr></thead><tbody>{query && !visible.length && <tr><td colSpan={(configuration ? 7 : 9) + Number(!!annotationRoles)}><span role="status">{t('没有匹配的字段')}</span></td></tr>}{visible.slice(page * 10, (page + 1) * 10).map(field => {
+    const position = ordered.indexOf(field);
     const index = schema.indexOf(field);
     const key = field.source || field.name;
     const issue = typeIssues[key] || typeIssues[field.name];
-    const handle = onReorder && <button className="field-drag-handle" aria-label={t("调整 {0} 顺序", key)} title={t("拖拽调整组内顺序；方向键上下移动")} disabled={busy || readOnly} draggable={!busy} onDragStart={e => { draggedField.current = key; setDragging(key); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); }} onDragEnd={() => { draggedField.current = null; setDragging(null); }} onKeyDown={e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); const target = ordered[ordered.indexOf(field) + (e.key === 'ArrowUp' ? -1 : 1)]; if (target) move(field, target); } }}><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="2" r="1" fill="currentColor" /><circle cx="6" cy="6" r="1" fill="currentColor" /><circle cx="6" cy="10" r="1" fill="currentColor" /></svg></button>;
+    const handle = onReorder && <button className="field-drag-handle" aria-label={t("调整 {0} 顺序", key)} title={t("拖拽调整组内顺序；方向键上下移动")} disabled={busy || readOnly} draggable={!busy} onDragStart={e => { draggedField.current = key; setDragging(key); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); }} onDragEnd={() => { draggedField.current = null; setDragging(null); }} onKeyDown={e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); const target = visible[visible.indexOf(field) + (e.key === 'ArrowUp' ? -1 : 1)]; if (target) move(field, target); } }}><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="2" r="1" fill="currentColor" /><circle cx="6" cy="6" r="1" fill="currentColor" /><circle cx="6" cy="10" r="1" fill="currentColor" /></svg></button>;
     const numeric = ['number', 'integer'].includes(field.type);
     const saved = formats[key];
     const format: FieldFormat = saved || { kind: field.type === 'integer' ? 'integer' : numeric ? 'decimal' : 'text', format: 'number', rounding: defaultRounding, decimals: field.type === 'integer' ? 0 : defaultDecimals };
@@ -70,7 +74,7 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
       if ((from < to && e.clientY >= midpoint) || (from > to && e.clientY <= midpoint)) move(moving, field);
     }} onDrop={e => { e.preventDefault(); e.stopPropagation(); draggedField.current = null; setDragging(null); }}>{configuration && <td>{!preserveOrder && numeric ? position - dimensionCount + 1 : position + 1}</td>}{configuration && <th className="field-source" scope="row" title={key}>{handle}{key}{onRemove && <button className="field-drag-handle field-remove" disabled={busy || schema.length <= 1} aria-label={t('舍弃字段 {0}', key)} onClick={() => onRemove(index)}><Icon name="remove" /></button>}</th>}{annotationRoles && <td className="annotation-role"><select aria-label={key + " " + t("标注字段")} disabled={busy || readOnly} value={annotationRoles[index] || ""} onChange={event => onAnnotationRole?.(index, event.target.value as AnnotationRole)}><option value="">{t("不作为标注")}</option>{(["label", "start", "end", "comment"] as const).map(role => <option key={role} value={role}>{t({ start: "开始日期", end: "结束日期", label: "标签", comment: "补充说明" }[role])}</option>)}</select></td>}<td>{configuration ? <div className="field-name-control"><input readOnly={readOnly || !onRename} aria-label={t("列名 {0}", index + 1)} disabled={busy || readOnly} value={field.name} onChange={e => onRename?.(index, e.target.value)} />{!numeric && onEditValues && <button className="field-value-settings" disabled={busy || readOnly} aria-label={t('设置 {0} 的显示对应关系', key)} title={t('值与显示名称')} onClick={() => onEditValues(key)}><Icon name="settings" /></button>}</div> : <>{handle}{field.name}</>}</td><td><select aria-label={key + t(" 字段类型")} disabled={busy || readOnly} value={numeric ? 'number' : field.type} onChange={e => {
       const type = e.target.value;
-      onChange(key, type, { kind: type === 'number' ? 'decimal' : 'text', format: 'number', rounding: defaultRounding, decimals: type === 'number' ? defaultDecimals : 0, ...(type === 'date' ? { dateFormat: 'MMM d' } : {}) });
+      onChange(key, type, { kind: type === 'number' ? 'decimal' : 'text', format: 'number', rounding: defaultRounding, decimals: type === 'number' ? defaultDecimals : 0, ...(type === 'date' ? { dateFormat: rows.some(row => /^\s*\d{4}[-/.]\d{1,2}\s*$/.test(String(row[key] ?? ''))) ? 'yyyy-MM' : 'MMM d' } : {}) });
     }}><option value="string">{t("文本")}</option><option value="date">{t("日期")}</option><option value="number">{t("数值")}</option></select></td><td>{numeric && <select aria-label={key + t(" 数值类型")} disabled={busy || readOnly} value={subtype} onChange={e => {
       const next = e.target.value;
       onChange(key, field.type, { kind: next === 'integer' ? 'integer' : 'decimal', format: next === 'percent' ? 'percent' : 'number', rounding: format.rounding || defaultRounding, decimals: next === 'integer' ? 0 : subtype === 'integer' ? defaultDecimals : decimals });
@@ -78,6 +82,6 @@ export function FieldSettings({ schema, rows, typeIssues = {}, formats = {}, bus
       if (event.target.value === 'custom') setCustomDates(previous => [...previous, key]);
       else { setCustomDates(previous => previous.filter(name => name !== key)); onChange(key, field.type, { ...format, kind: 'text', format: 'number', decimals: 0, dateFormat: event.target.value }); }
     }}>{dateFormats.map(pattern => <option key={pattern} value={pattern}>{formatField('2026-10-11', { kind: 'text', format: 'number', decimals: 0, dateFormat: pattern })} ({pattern})</option>)}<option value="custom">{t('自定义')}</option></select>{(customDates.includes(key) || !dateFormats.includes(format.dateFormat || 'MMM d')) && <input aria-label={key + t('自定义日期格式')} maxLength={100} disabled={busy || readOnly} value={format.dateFormat || ''} placeholder="yyyy-MM-dd" onChange={event => onChange(key, field.type, { ...format, kind: 'text', format: 'number', decimals: 0, dateFormat: event.target.value || undefined })} />}</div>}</td><td>{numeric && subtype !== 'integer' ? <select aria-label={key + t(" 小数位数")} disabled={busy || readOnly} value={decimals} onChange={e => onChange(key, field.type, { ...format, decimals: Number(e.target.value) })}>{Array.from({ length: 8 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}</select> : configuration && <span className="empty-decimals" aria-hidden="true" />}</td>{Array.from({ length: configuration ? 1 : 5 }, (_, i) => <td className="field-sample" key={i}>{issue && i === 0 ? <span className="field-type-issue">{issue.join(', ')}</span> : i < rows.length ? formatField(rows[i][key], numeric ? { ...format, decimals: subtype === 'integer' ? 0 : decimals } : field.type === 'date' ? { ...format, dateFormat: format.dateFormat || 'MMM d' } : { kind: 'text', format: 'number', decimals: 0 }) : '—'}</td>)}</tr>;
-  })}</tbody></table><Pagination page={page} total={ordered.length} onChange={setPage} disabled={busy} /></div>;
+  })}</tbody></table><Pagination page={page} total={visible.length} onChange={setPage} disabled={busy} /></div>;
 }
 

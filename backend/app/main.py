@@ -132,6 +132,18 @@ def health() -> dict:
 
 
 WEB_DIST = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
+
+
+@app.middleware('http')
+async def revalidate_pages(request, call_next):
+    # HTML pages (editor and published /view pages) name the current hashed bundle; always revalidate them so a
+    # rebuilt MyBI is picked up instead of a cached page that still loads the previous bundle.
+    response = await call_next(request)
+    if response.headers.get('content-type', '').startswith('text/html') and 'cache-control' not in response.headers:
+        response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
 if WEB_DIST.is_dir():
     @app.get('/reports', include_in_schema=False)
     @app.get('/reports/new', include_in_schema=False)

@@ -23,6 +23,10 @@ export function formatChartField(value: unknown, format?: FieldFormat, locale = 
   return formatField(value, format, locale);
 }
 
+export function formatBaseline({ label, value, format }: { label: string; value: number; format?: FieldFormat }, locale = getChartLocale()): string {
+  return label + ': ' + formatChartField(value, format, locale);
+}
+
 export function formatField(value: unknown, format?: FieldFormat, locale = getLocale()): string {
   const label = format?.valueLabels?.[JSON.stringify(value)];
   if (label?.trim()) return label.trim();

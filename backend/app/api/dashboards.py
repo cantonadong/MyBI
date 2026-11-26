@@ -48,6 +48,40 @@ class AddComment(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
 
 
+def publication_dataset_ids(document: dict) -> list[str]:
+    sources = {source['id']: source for source in document.get('datasets', []) if source.get('id')}
+    charts = document.get('charts', [])
+    ids = dict.fromkeys(chart['datasetId'] for chart in charts if chart.get('datasetId') and chart.get('config', {}).get('type') != 'title')
+    annotation_types = {'bar', 'line', 'area', 'mixed', 'candlestick', 'waterfall', 'boxplot', 'heatmap'}
+    baseline_types = {'bar', 'line', 'area', 'mixed', 'scatter', 'waterfall', 'boxplot', 'candlestick'}
+    include_annotations = False
+    for chart in charts:
+        config = chart.get('config', {})
+        if not include_annotations and config.get('showAnnotations') and config.get('type') in annotation_types and not config.get('horizontal'):
+            schema = sources.get(chart.get('datasetId'), {}).get('schema') or []
+            dimension = config.get('dimension')
+            include_annotations = bool(dimension) and any(
+                field.get('name') == dimension and field.get('type') in {'date', 'string'} for field in schema
+            )
+        if config.get('showBaselines') and config.get('type') in baseline_types:
+            for field in config.get('baselineFields') or []:
+                source_id = field.get('datasetId')
+                if sources.get(source_id, {}).get('baseline_values') is not None:
+                    ids[source_id] = None
+    if include_annotations:
+        ids.update(dict.fromkeys(source_id for source_id, source in sources.items() if source.get('annotation_fields')))
+    return list(ids)
+
+
+def publication_datasets(document: dict) -> list[dict]:
+    return [dataset_payload(*get_pair(source_id)) for source_id in publication_dataset_ids(document)]
+
+
+@router.post('/publication-datasets')
+def list_publication_datasets(body: SaveDashboard):
+    return publication_datasets(body.document)
+
+
 @router.post('/{dashboard_id}/publish')
 def publish_dashboard(dashboard_id: str, body: PublishDashboard):
     with ExitStack() as files, SessionLocal.begin() as session:
@@ -60,10 +94,8 @@ def publish_dashboard(dashboard_id: str, body: PublishDashboard):
         if locked.rowcount != 1:
             raise HTTPException(409, '报表已被其他操作修改，请重新打开后再发布')
         files.enter_context(rollback_files([report_path(dashboard_id, session), settings.report_root / f'{dashboard_id}.json']))
-        document = {key: value for key, value in item.document.items() if key != '_mybi'}
-        ids = {chart['datasetId'] for chart in document.get('charts', []) if chart.get('datasetId')}
-        ids.update(source['id'] for source in document.get('datasets', []) if source.get('annotation_fields'))
-        document['datasets'] = [dataset_payload(*get_pair(source_id)) for source_id in ids]
+        document = {key: value for key, value in item.document.items() if key not in {'_mybi', 'datasetFolders'}}
+        document['datasets'] = publication_datasets(document)
         published = session.get(PublishedDashboard, dashboard_id)
         if not published:
             published = PublishedDashboard(id=dashboard_id)
@@ -82,7 +114,9 @@ def get_published(dashboard_id: str):
         item = session.get(PublishedDashboard, dashboard_id)
         if not item:
             raise HTTPException(404, 'Report has not been published')
-        document = {**item.document, 'datasets': [dataset_payload(*get_pair(source['id'])) if session.get(DynamicSource, source.get('id')) else source for source in item.document.get('datasets', [])]}
+        ids = set(publication_dataset_ids(item.document))
+        document = {**item.document, 'datasets': [dataset_payload(*get_pair(source['id'])) if session.get(DynamicSource, source.get('id')) else source for source in item.document.get('datasets', []) if source.get('id') in ids]}
+        document.pop('datasetFolders', None)
         return {'id': item.id, 'name': item.name, 'document': document, 'theme': item.theme}
 
 

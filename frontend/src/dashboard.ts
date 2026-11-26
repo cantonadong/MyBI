@@ -8,26 +8,29 @@ export type Filter = { sourceId?: string; datasetId?: string; inTitle?: boolean;
 export type FilterMode = 'global' | 'local' | 'both';
 export type AnnotationFields = Record<'start' | 'end' | 'label', string> & { comment?: string };
 export type Annotation = { comment?: string; start: string | null; end: string | null; label: string };
-export type Dataset = { owner?: string | null; updated_at?: string | null; storage_path?: string; local_id?: number; fingerprint?: string; annotation_merge?: boolean; annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
+export type Dataset = { baseline_labels?: string[]; baseline_values?: Record<string, number> | Record<string, number>[]; owner?: string | null; updated_at?: string | null; storage_path?: string; local_id?: number; fingerprint?: string; annotation_merge?: boolean; annotation_fields?: Partial<AnnotationFields>; snapshot_id?: string; data_as_of?: string; id: string; name: string; schema: { name: string; type: string; display_name?: string }[]; row_count: number; import_method?: 'paste' | 'upload' | 'dynamic' | null; filename?: string | null; version?: number; field_formats?: FieldFormats; dynamic?: { duration_seconds?: number | null; last_run_at?: string | null; next_run_at?: string | null; last_error?: string | null; refreshing?: boolean; schedule: { enabled: boolean; time: string; timezone: string } } };
 export type Tile = { id: string; tabId?: string; datasetId: string; config: ChartConfig; followFilterIds?: string[]; filterMode: FilterMode; filters: Filter[]; x: number; y: number; w: number; h: number };
 export type ReportTab = { id: string; name: string };
+export type DatasetFolder = { id: string; name: string; datasetIds: string[] };
 export type CanvasGrid = { columns: number; rows: number };
 export type InsertSide = 'left' | 'right' | 'top' | 'bottom';
-export type Document = { titleNoDimension?: boolean; rowScale?: number; colScale?: number; tabs?: ReportTab[]; showGuides?: boolean; guideType?: 'quarters' | 'thirds'; canvasWidth?: number; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
+export type Document = { rowScale?: number; colScale?: number; tabs?: ReportTab[]; datasetFolders?: DatasetFolder[]; orderedDatasets?: boolean; showGuides?: boolean; guideType?: 'thirds' | 'quarters' | 'sixths' | 'twelfths'; canvasWidth?: number; refreshSchedule?: { enabled: boolean; time: string; timezone: string }; highlightWeekends?: boolean; charts: Tile[]; filters: Filter[]; datasets: Dataset[]; grid?: CanvasGrid };
 export type SavedReport = { id: string; pages?: number; published?: boolean; storage_path?: string; local_id?: number; fingerprint?: string; name: string; owner?: string | null; updated_at?: string | null };
 export function chartTitle(config: ChartConfig, dataset?: Dataset, filters: Filter[] = [], locale = getChartLocale()): string {
   if (config.type === 'filter') return config.title || ''; // shown exactly as set in the properties sidebar
   const label = (name: string) => {
-    const text = dataset?.schema.find(field => field.name === name)?.display_name || name;
-    return titleCase(text);
+    const displayName = dataset?.schema.find(field => field.name === name)?.display_name;
+    if (displayName && displayName !== name) return displayName;
+    // Underscores become spaces; common metric abbreviations (DAU, ARPU …) are shown in capitals.
+    return titleCase(name).replace(/_+/g, ' ').replace(/\b(?:[dwm]au|arp(?:p)?u|ltv|gmv|roi|ctr|cvr|cpa|cpc|cpm|cpi|kpi|pcu|acu|ccu)\b/gi, word => word.toUpperCase());
   };
   const multiple = ['bar', 'line', 'area', 'mixed', 'candlestick'].includes(config.type);
   const metrics = (multiple ? config.measures || [config.measure, config.secondMeasure] : [config.measure, ...(config.type === 'scatter' ? [config.secondMeasure] : [])]).filter((field): field is string => !!field).map(field => {
     const method = config.metricAggregations?.[field] || config.aggregation || 'sum';
     return label(field) + (method === 'sum' || ['scatter', 'histogram', 'boxplot', 'candlestick'].includes(config.type) ? '' : ` (${method})`);
   }).join(', ');
-  const dimensions = (['kpi', 'gauge', 'histogram'].includes(config.type) ? [] : multiple && config.type !== 'candlestick' ? config.dimensions || [config.dimension] : [config.dimension]).filter((field): field is string => !!field).map(label).join(', ');
-  const title = config.autoTitle === false ? config.title || '' : metrics ? metrics + (dimensions && !config.titleNoDimension ? ' by ' + dimensions : '') : config.title || '';
+  // Automatic titles name only the metrics; dimensions are never appended.
+  const title = config.autoTitle === false ? config.title || '' : metrics || config.title || '';
   const selections = filters.flatMap(filter => {
     const field = dataset?.schema.find(field => field.name === filter.field && ['string', 'date'].includes(field.type));
     if (!filter.inTitle || !field || !['in', 'date_between'].includes(filter.op)) return [];
@@ -121,6 +124,18 @@ export const minWidth = (columns = GRID_COLUMNS) => Math.ceil(columns / 4);
 export const minCols = (_tile: Tile, columns = GRID_COLUMNS) => minWidth(columns);
 export function normalizeDocument(doc: Document): Document {
   let next = doc;
+  if (doc.datasetFolders?.length) {
+    const tabs = doc.tabs?.length ? doc.tabs : [{ id: 'main', name: t('标签页 {0}', 1) }];
+    const migrated: DatasetFolder[] = [];
+    for (const folder of doc.datasetFolders) {
+      const tab = tabs.find(item => item.id === folder.id) || tabs.find(item => tabTitle(item.name) === tabTitle(folder.name));
+      if (!tab) continue;
+      const existing = migrated.find(item => item.id === tab.id);
+      if (existing) existing.datasetIds = [...new Set([...existing.datasetIds, ...folder.datasetIds])];
+      else migrated.push({ ...tab, datasetIds: folder.datasetIds });
+    }
+    next = { ...next, datasetFolders: migrated };
+  }
   if (next.rowScale !== 2) next = { ...next, rowScale: 2, charts: (next.charts || []).map(chart => ({ ...chart, y: chart.y * 2, h: chart.h * 2 })), ...(next.grid ? { grid: { ...next.grid, rows: next.grid.rows * 2 } } : {}) };
   if (next.colScale !== 2) next = { ...next, colScale: 2, charts: next.charts.map(chart => ({ ...chart, x: chart.x * 2, w: chart.w * 2 })), ...(next.grid ? { grid: { ...next.grid, columns: next.grid.columns * 2 } } : {}) };
   // Components saved narrower than 1/4 widen to it; anything they now overlap moves down (per tab, reading order).
@@ -165,7 +180,7 @@ export function findGridSpace(charts: Tile[], w: number, h: number, grid: Canvas
   }
   return null;
 }
-export function insertGridTile(charts: Tile[], movingId: string, targetId: string, side: InsertSide, columns: number): Tile[] | null {
+export function insertGridTile(charts: Tile[], movingId: string, targetId: string, side: InsertSide, columns: number, snapWidth: (width: number, maxWidth: number) => number): Tile[] | null {
   const moving = charts.find(chart => chart.id === movingId), target = charts.find(chart => chart.id === targetId);
   if (!moving || !target || moving === target) return null;
   const isFilter = (tile: Tile) => tile.config.type === 'filter';
@@ -174,10 +189,10 @@ export function insertGridTile(charts: Tile[], movingId: string, targetId: strin
   const row = others.filter(chart => chart.y === target.y).sort((a, b) => a.x - b.x);
   if (side === 'top' || side === 'bottom') {
     // Up / down: insert as a new row above / below the target's whole row (the row is never split); every tile from
-    // that point down moves down by the dragged tile's height. Charts take the full width (single in their row).
+    // that point down moves down by the dragged tile's height. The moved tile keeps its snapped width.
     const y = side === 'top' ? target.y : Math.max(...row.map(chart => chart.y + chart.h));
     const rest = withRefill(others, refillOriginRow(charts, moving, new Set())).map(chart => chart.y >= y ? { ...chart, y: chart.y + moving.h } : chart);
-    const placed = { ...moving, y, x: 0, w: isFilter(moving) ? Math.min(moving.w, columns) : columns };
+    const placed = { ...moving, y, x: 0, w: snapWidth(moving.w, columns) };
     return pushGridTiles([...rest, placed], [placed]); // also clears tall legacy tiles that span the insertion line
   }
   // Left / right: join the target's row next to the target. Filters and charts never share a row. Chart rows keep the
@@ -190,31 +205,30 @@ export function insertGridTile(charts: Tile[], movingId: string, targetId: strin
   const height = Math.max(...row.map(chart => chart.h));
   let placed: Tile[];
   if (isFilter(moving)) {
-    if (order.reduce((sum, chart) => sum + chart.w, 0) > columns) return null;
+    const room = columns - row.reduce((sum, chart) => sum + chart.w, 0);
+    if (room < minWidth(columns)) return null;
     let x = 0;
-    placed = order.map(chart => { const next = { ...chart, x, y: target.y }; x += chart.w; return next; });
+    placed = order.map(chart => { const w = chart.id === moving.id ? snapWidth(Math.min(chart.w, room), room) : chart.w; const next = { ...chart, x, w, y: target.y }; x += w; return next; });
   } else {
     if (Math.floor(columns / order.length) < minWidth(columns)) return null;
     const room = columns - row.reduce((sum, chart) => sum + chart.w, 0);
     if (room >= minWidth(columns)) {
       let x = 0;
-      placed = order.map(chart => { const w = chart.id === moving.id ? Math.min(moving.w, room) : chart.w; const next = { ...chart, x, w, y: target.y, h: height }; x += w; return next; });
-    } else placed = spreadRow(order, 0, columns, height).map(chart => ({ ...chart, y: target.y }));
+      placed = order.map(chart => { const w = chart.id === moving.id ? snapWidth(Math.min(moving.w, room), room) : chart.w; const next = { ...chart, x, w, y: target.y, h: height }; x += w; return next; });
+    } else placed = spreadRow(order, 0, columns, height).map(chart => ({ ...chart, y: target.y, w: chart.id === moving.id ? snapWidth(chart.w, chart.w) : chart.w }));
   }
   const sameRow = moving.y === target.y;
   return pushGridTiles(withRefill(charts, sameRow ? [] : refillOriginRow(charts, moving, new Set(order.map(chart => chart.id)))), placed);
 }
-// Blank space beside a row: when the pointer is in a free stretch of the row (tiles sharing top edge rowY) that is
-// at least as wide as the dragged tile, the tile keeps its width and lands there, centred on the pointer column and
-// clamped into the gap. Filters and charts never share a row; a row holds at most MAX_ROW_ITEMS tiles.
-export function placeInRowGap(charts: Tile[], movingId: string, rowY: number, column: number, columns: number): Tile[] | null {
+// A horizontal move keeps the tile's size and drag anchor. Drops from another row centre the snapped tile in the gap.
+export function placeInRowGap(charts: Tile[], movingId: string, rowY: number, column: number, columns: number, snapWidth: (width: number, maxWidth: number) => number, preferredX?: number): Tile[] | null {
   const moving = charts.find(chart => chart.id === movingId);
   if (!moving) return null;
   const isFilter = (tile: Tile) => tile.config.type === 'filter';
   const row = charts.filter(chart => chart.id !== movingId && chart.y === rowY);
-  if (!row.length || row.length >= MAX_ROW_ITEMS || row.some(chart => isFilter(chart) !== isFilter(moving))) return null;
-  const h = isFilter(moving) ? moving.h : Math.max(...row.map(chart => chart.h));
-  const w = Math.min(moving.w, columns);
+  const sameRow = moving.y === rowY;
+  if (!sameRow && (!row.length || row.length >= MAX_ROW_ITEMS || row.some(chart => isFilter(chart) !== isFilter(moving)))) return null;
+  const h = sameRow || isFilter(moving) ? moving.h : Math.max(...row.map(chart => chart.h));
   // Everything (other than the dragged tile) overlapping the band the tile would occupy blocks columns.
   const blocking = charts.filter(chart => chart.id !== movingId && chart.y < rowY + h && chart.y + chart.h > rowY).sort((a, b) => a.x - b.x);
   let left = 0, gap: [number, number] | null = null;
@@ -222,18 +236,20 @@ export function placeInRowGap(charts: Tile[], movingId: string, rowY: number, co
     if (column >= left && column < chart.x) { gap = [left, chart.x]; break; }
     left = Math.max(left, chart.x + chart.w);
   }
-  if (!gap || gap[1] - gap[0] < w) return null;
-  const placed = { ...moving, w, h, y: rowY, x: Math.max(gap[0], Math.min(column - Math.floor(w / 2), gap[1] - w)) };
-  return pushGridTiles(withRefill(charts, moving.y === rowY ? [] : refillOriginRow(charts, moving, new Set())), [placed]);
+  if (!gap || gap[1] - gap[0] < moving.w) return null;
+  const w = sameRow ? moving.w : snapWidth(moving.w, gap[1] - gap[0]);
+  const x = Math.max(gap[0], Math.min(preferredX ?? column - Math.floor(w / 2), gap[1] - w));
+  if (sameRow && x === moving.x) return null;
+  return pushGridTiles(withRefill(charts, sameRow ? [] : refillOriginRow(charts, moving, new Set())), [{ ...moving, w, h, y: rowY, x }]);
 }
 // Tidy after a drop or delete: close rows the operation emptied, then stretch any chart that this operation left
 // alone in its row (nothing beside it any more) to the full width. Charts already alone keep the width users sized.
-export function arrangeAfterChange(before: Tile[], after: Tile[], columns: number): Tile[] {
+export function arrangeAfterChange(before: Tile[], after: Tile[], columns: number, movingId?: string): Tile[] {
   const closed = closeVacatedRows(before, after);
   const alone = (charts: Tile[], chart: Tile) => !charts.some(other => other.id !== chart.id && other.y < chart.y + chart.h && other.y + other.h > chart.y);
   return closed.map(chart => {
     const previous = before.find(item => item.id === chart.id);
-    return chart.config.type !== 'filter' && alone(closed, chart) && (!previous || !alone(before, previous)) ? { ...chart, x: 0, w: columns } : chart;
+    return chart.id !== movingId && chart.config.type !== 'filter' && alone(closed, chart) && (!previous || !alone(before, previous)) ? { ...chart, x: 0, w: columns } : chart;
   });
 }
 // After a drag or delete, rows that had a component before but are now empty across the whole canvas (left behind

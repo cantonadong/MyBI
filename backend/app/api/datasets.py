@@ -4,6 +4,7 @@ import csv
 from io import StringIO
 from pathlib import Path, PureWindowsPath
 import json
+import re
 import math
 from decimal import Decimal
 from threading import BoundedSemaphore, Timer
@@ -66,6 +67,7 @@ class PasteImport(BaseModel):
     annotation_fields: dict[str, str] = Field(default_factory=dict)
     annotation_order: list[str] = Field(default_factory=list)
     annotation_merge: bool = False
+    baseline: bool | None = None
 
 
 def convert_preview(preview, overrides, renames=None, field_order=None, confirm_conversion=False, formats=None, annotation_fields=None):
@@ -128,7 +130,7 @@ def convert_preview(preview, overrides, renames=None, field_order=None, confirm_
             try:
                 if annotation_fields and field_name in {annotation_fields['start'], annotation_fields['end']}:
                     return annotation_date(value)
-                return date.fromisoformat(str(value)[:10])
+                return parse_date(value)
             except ValueError as error:
                 raise ValueError(f'字段“{field_name}”的值“{value}”无法转换为日期。请使用 YYYY-MM-DD 格式（例如 2026-10-28），或将该字段改为文本或数值类型。') from error
         raise ValueError('Unsupported column type')
@@ -160,6 +162,38 @@ def convert_preview(preview, overrides, renames=None, field_order=None, confirm_
 
 def preview_payload(preview):
     return {'schema': [{'name': f.name, 'type': f.type} for f in preview.fields], 'rows': [dict(zip(preview.headers, row)) for row in preview.rows[:5]], 'row_count': len(preview.rows), 'field_formats': infer_formats(preview)}
+
+
+MONTH_TEXT = re.compile(r'\s*(\d{4})[-/.](\d{1,2})\s*')
+DAY_TEXT = re.compile(r'\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?\s*')
+
+
+def parse_date(value):
+    """Dates for date fields: YYYY-MM-DD (optionally with a time), YYYY/M/D, or a month such as 2026-01 (first day)."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    month = MONTH_TEXT.fullmatch(text)
+    if month:
+        return date(int(month[1]), int(month[2]), 1)
+    day = DAY_TEXT.fullmatch(text)
+    if day:
+        return date(int(day[1]), int(day[2]), int(day[3]))
+    return date.fromisoformat(text.strip()[:10])
+
+
+def sql_date(column: str) -> str:
+    """DuckDB date cast that also accepts months (2026-01) and slash/dot separated days, like parse_date."""
+    text = f'trim(CAST({column} AS VARCHAR))'
+    return (f"COALESCE(TRY_CAST({column} AS DATE), "
+            f"TRY_CAST(regexp_replace({text}, '^(\\d{{4}})[-/.](\\d{{1,2}})$', '\\1-\\2-01') AS DATE), "
+            f"TRY_CAST(regexp_replace({text}, '^(\\d{{4}})[-/.](\\d{{1,2}})[-/.](\\d{{1,2}}).*$', '\\1-\\2-\\3') AS DATE))")
+
+
+def is_month_value(value) -> bool:
+    return isinstance(value, str) and bool(MONTH_TEXT.fullmatch(value))
 
 
 def annotation_date(value):
@@ -266,6 +300,27 @@ def dataset_payload(dataset: Dataset, snapshot: DatasetSnapshot) -> dict:
         kind = ('integer' if pa.types.is_integer(arrow_schema.field(field['name']).type) else 'decimal') if field['type'] in {'number', 'integer'} else 'text'
         formats[field['name']] = field.get('display', {'kind': kind, 'format': 'number', 'decimals': 0 if kind == 'integer' else 1})
     result = {"id": dataset.id, "name": dataset.name, "snapshot_id": snapshot.id, "row_count": snapshot.row_count, "schema": [{"name": f['name'], "type": f['type'], "display_name": f.get('display_name', f['name'])} for f in snapshot.schema_json], "field_formats": formats, "version": dataset.version, "data_as_of": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(), "import_method": metadata.get(b'import_method', b'').decode() or None, "filename": metadata.get(b'filename', b'').decode() or None}
+    if metadata.get(b'baseline') == b'true':
+        columns = [field['name'] for field in snapshot.schema_json if field['type'] in {'number', 'integer'}]
+        dimensions = [field['name'] for field in snapshot.schema_json if field['type'] in {'string', 'date'}]
+        rows, labels = [], []
+        if columns:
+            with pq.ParquetFile(snapshot_path(snapshot)) as parquet:
+                for batch in parquet.iter_batches(columns=columns + dimensions):
+                    for row in batch.to_pylist():
+                        values = {}
+                        for name in columns:
+                            raw = row[name]
+                            try:
+                                value = float(raw)
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if math.isfinite(value):
+                                values[name] = value
+                        rows.append(values)
+                        labels.append(next((str(row[name]) for name in dimensions if row[name] is not None and str(row[name]).strip()), ''))
+        result['baseline_values'] = rows
+        result['baseline_labels'] = labels
     result['annotation_merge'] = any(field.get('annotation_merge') for field in snapshot.schema_json)
     result['annotation_fields'] = {field['annotation_role']: field['name'] for field in snapshot.schema_json if field.get('annotation_role')}
     result.update(resource_metadata('dataset', dataset.id, object_session(dataset)))
@@ -291,13 +346,15 @@ def table_for_preview(preview):
     return pa.table(arrays)
 
 
-def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None, identity: str | None = None, on_publish=None, annotation_fields: dict | None = None, annotation_merge: bool | None = None) -> dict:
+def publish(name: str, preview, import_method: str = 'paste', filename: str | None = None, formats: dict | None = None, dataset_id: str | None = None, version: int | None = None, identity: str | None = None, on_publish=None, annotation_fields: dict | None = None, annotation_merge: bool | None = None, baseline: bool | None = None) -> dict:
     previous_fields = {}
     if dataset_id:
         existing, previous = get_pair(dataset_id)
         if existing.version != version:
             raise HTTPException(409, '数据集已被修改，请重新打开字段配置后再试')
         previous_fields = {field['name']: field for field in previous.schema_json}
+        if baseline is None:
+            baseline = (pq.read_schema(snapshot_path(previous)).metadata or {}).get(b'baseline') == b'true'
     if annotation_fields is None:
         annotation_fields = {field['annotation_role']: field['name'] for field in previous_fields.values() if field.get('annotation_role')}
     if annotation_merge is None:
@@ -331,7 +388,13 @@ def publish(name: str, preview, import_method: str = 'paste', filename: str | No
         if not ((types.get(field) in {'number', 'integer'} and validated.kind != 'text' and validated.dateFormat is None and validated.valueLabels is None) or (types.get(field) in {'string', 'date'} and validated.kind == 'text' and (validated.valueLabels is not None or validated.dateFormat is not None) and (types.get(field) == 'date' or validated.dateFormat is None))):
             raise ValueError('显示格式与字段类型不匹配')
         displays[field] = {**displays[field], **validated.model_dump(exclude_none=True)}
-    table = table_for_preview(preview).replace_schema_metadata({b'import_method': import_method.encode(), b'filename': (filename or '').encode()})
+    metadata = {b'import_method': import_method.encode(), b'filename': (filename or '').encode()}
+    if baseline:
+        numeric_columns = [index for index, field in enumerate(preview.fields) if field.type in {'number', 'integer'}]
+        if import_method == 'dynamic' or annotation_fields or not any(row[index] is not None for row in preview.rows for index in numeric_columns):
+            raise HTTPException(422, '静态基准至少需要一个有效数值')
+        metadata[b'baseline'] = b'true'
+    table = table_for_preview(preview).replace_schema_metadata(metadata)
     identity = dataset_id or identity or str(uuid4())
     snapshot_id = str(uuid4())
     root = dataset_dir(identity) / 'snapshots'
@@ -374,11 +437,11 @@ def import_paste(request: PasteImport) -> dict:
     if len(request.text.encode('utf-8')) > settings.max_upload_bytes:
         raise HTTPException(413, 'Input is too large')
     preview = annotation_preview(parse_delimited(request.text, request.delimiter, request.has_header), request.annotation_order)
-    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats, request.annotation_fields), formats=request.formats, dataset_id=request.dataset_id, version=request.version, annotation_fields=request.annotation_fields, annotation_merge=request.annotation_merge)
+    return preview_payload(preview) if request.preview else publish(request.name, convert_preview(preview, request.overrides, request.renames, request.field_order, request.confirm_conversion, request.formats, request.annotation_fields), formats=request.formats, dataset_id=request.dataset_id, version=request.version, annotation_fields=request.annotation_fields, annotation_merge=request.annotation_merge, baseline=request.baseline)
 
 
 @router.post("/imports/files", status_code=201)
-async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False), annotation_fields: str = Form('{}'), annotation_order: str = Form('[]'), annotation_merge: bool = Form(False)) -> dict:
+async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet: str | None = Form(None), preview: bool = Form(False), overrides: str = Form('{}'), renames: str = Form('{}'), formats: str = Form('{}'), encoding: str = Form('utf-8-sig'), delimiter: str = Form(''), has_header: bool = Form(True), field_order: str = Form('[]'), dataset_id: str | None = Form(None), version: int | None = Form(None), confirm_conversion: bool = Form(False), annotation_fields: str = Form('{}'), annotation_order: str = Form('[]'), annotation_merge: bool = Form(False), baseline: bool | None = Form(None)) -> dict:
     suffix = (file.filename or "").lower().rsplit(".", 1)[-1]
     content = await file.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
@@ -399,7 +462,7 @@ async def import_file(name: str = Form(...), file: UploadFile = File(...), sheet
     displays = json.loads(formats)
     parsed = annotation_preview(parsed, TypeAdapter(list[str]).validate_json(annotation_order))
     annotations = TypeAdapter(dict[str, str]).validate_json(annotation_fields)
-    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays, annotations), 'upload', file.filename, displays, dataset_id, version, annotation_fields=annotations, annotation_merge=annotation_merge)
+    return preview_payload(parsed) if preview else publish(name, convert_preview(parsed, json.loads(overrides), json.loads(renames), order, confirm_conversion, displays, annotations), 'upload', file.filename, displays, dataset_id, version, annotation_fields=annotations, annotation_merge=annotation_merge, baseline=baseline)
 
 
 def get_pair(dataset_id: str):
@@ -652,7 +715,7 @@ def interpreted_source(snapshot, types) -> str:
         if kind in {'number', 'integer'} and not (pa.types.is_integer(original) or pa.types.is_floating(original) or pa.types.is_decimal(original)):
             column = f'TRY_CAST({column} AS DOUBLE)'
         elif kind == 'date' and not pa.types.is_date(original):
-            column = f'TRY_CAST({column} AS DATE)'
+            column = sql_date(column)
         elif kind == 'string' and not pa.types.is_string(original):
             column = f'CAST({column} AS VARCHAR)'
         interpreted.append(column + ' AS ' + _quote(name))
@@ -702,7 +765,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
         column = quote(item.field)
         if item.op in {"between", "date_between"} and isinstance(item.value, list) and len(item.value) == 2:
             if item.op == 'date_between' or types[item.field] == 'date':
-                column = f'TRY_CAST({column} AS DATE)'
+                column = sql_date(column)
             conditions.append(f"{column} BETWEEN ? AND ?"); parameters.extend(item.value)
         elif item.op == "eq":
             conditions.append(f"{column} = ?"); parameters.append(item.value)
@@ -728,7 +791,7 @@ def view_query(dataset_id: str, request: ViewQuery) -> dict:
     if request.chart_type == 'date-range':
         if len(request.fields) != 1 or types[request.fields[0]] not in {'string', 'date'}:
             raise HTTPException(422, 'Date ranges require a text or date field')
-        field = f'TRY_CAST({quote(request.fields[0])} AS DATE)'
+        field = sql_date(quote(request.fields[0]))
         projection = f'MIN({field}) AS __start, MAX({field}) AS __end'
         group = ''
     if request.aggregation:

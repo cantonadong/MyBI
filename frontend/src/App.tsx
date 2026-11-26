@@ -1,3 +1,4 @@
+import { ChartDescription } from './ChartDescription';
 import { confirmAction } from './confirmAction';
 import { defaultScheduleTime, formatUpdatedAt, localTimeZone } from './dateTime';
 import { TimePicker } from './TimePicker';
@@ -10,8 +11,9 @@ import GridLayout, { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartView } from './charts/ChartView';
-import { chartRegistry, ChartConfig, ChartType } from './charts/registry';
-import { api, publicReportAccess, offlineExport, portalId, setPortalReport, fieldTypeIssues, controlFilters, filterMatchesChart, followedFilterIds, nextFilterTitle, nextMetricConfig, normalizeDocument, closeVacatedRows, arrangeAfterChange, minCols, ROW_HEIGHT, ROW_GAP, ROW_UNIT, MIN_CHART_ROWS, MIN_FILTER_ROWS, minWidth, FILTER_DEFAULT_ROWS, chartTitle, chartSort, Dataset, Document, SavedReport, Filter, json, Tile, gridFor, findGridSpace, insertGridTile, moveGridTile, pushGridTiles, placeInRowGap, InsertSide } from './dashboard';
+import { formatBaseline } from './fieldDisplay';
+import { baselineAxisCharts, chartRegistry, ChartConfig, ChartType } from './charts/registry';
+import { api, tabTitle, publicReportAccess, offlineExport, portalId, setPortalReport, fieldTypeIssues, controlFilters, filterMatchesChart, followedFilterIds, nextFilterTitle, nextMetricConfig, normalizeDocument, closeVacatedRows, arrangeAfterChange, minCols, ROW_HEIGHT, ROW_GAP, ROW_UNIT, MIN_CHART_ROWS, MIN_FILTER_ROWS, minWidth, FILTER_DEFAULT_ROWS, chartTitle, chartSort, Dataset, Document, SavedReport, Filter, json, Tile, gridFor, findGridSpace, insertGridTile, moveGridTile, pushGridTiles, placeInRowGap, InsertSide } from './dashboard';
 import { AnnotationImport, AnnotationRole } from './AnnotationImport';
 import type { Annotation, AnnotationFields, ExportPayload } from './dashboard';
 import { FieldBindings } from './FieldBindings';
@@ -30,11 +32,18 @@ import { ScheduledQueries } from './ScheduledQueries';
 import { PermissionsPage, PortalsPage, RolesPage, UsersPage } from './AccessPages';
 import { TimezoneSelect } from './TimezoneSelect';
 import { DatasetManager } from './DatasetManager';
+import { DatasetFolderMenu } from './DatasetFolderMenu';
+import type { DatasetFolder } from './dashboard';
 import { chartColors, chartPalettes, randomChartColors } from './charts/palettes';
 
 const LAST_CANVAS_WIDTH_KEY = 'mybi.lastCanvasWidth';
 const lastCanvasWidth = () => { try { return Number(localStorage.getItem(LAST_CANVAS_WIDTH_KEY)) || undefined; } catch { return undefined; } };
 
+const guideDivisions = { thirds: 3, quarters: 4, sixths: 6, twelfths: 12 };
+const legacyTitleSizes = [14, 16, 18, 20, 24, 28];
+const defaultTitleSize = 28;
+const titleFontSize = (config: ChartConfig) => config.titleFontSize ?? legacyTitleSizes[(config.titleSize ?? 0) - 1] ?? defaultTitleSize;
+const titleRows = 2;
 const empty: Document = { rowScale: 2, colScale: 2, charts: [], filters: [], datasets: [] };
 function nameWithTime(name: string, date = new Date()) {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -51,8 +60,8 @@ function nextDatasetName(existing: { name: string }[], annotation = false) {
   return t(annotation ? '标注{0}' : '数据集{0}', Math.max(0, ...existing.map(item => Number(pattern.exec(item.name)?.[1] || 0))) + 1);
 }
 // The tag always shows the actual source kind (annotation datasets too); English tags are fixed 3-letter codes so the label width never changes.
-function DatasetTag({ dynamic }: { dynamic?: unknown }) {
-  const text = dynamic ? '动态' : '静态';
+function DatasetTag({ dynamic, annotation = false, baseline = false }: { dynamic?: unknown; annotation?: boolean; baseline?: boolean }) {
+  const text = baseline ? '静态基准' : (dynamic ? '动态' : '静态') + (annotation ? '标注' : '');
   return <span className="dataset-label">{getLocale() === 'en' ? t('tag:' + text) : text}</span>;
 }
 function escapeHtml(value: string) {
@@ -63,10 +72,6 @@ function fieldChangeMessage(previous: any[] | undefined, schema: any[]) {
   const before = new Set(previous.map(field => field.source || field.name));
   const after = new Set(schema.map(field => field.source || field.name));
   return t('字段重新识别：{0} → {1}，新增 {2}，移除 {3}', previous.length, schema.length, [...after].filter(field => !before.has(field)).length, [...before].filter(field => !after.has(field)).length);
-}
-// A chart's own titleNoDimension wins; unset charts follow the canvas setting.
-function titleConfig(config: ChartConfig, doc: { titleNoDimension?: boolean }): ChartConfig {
-  return config.titleNoDimension !== undefined || !doc.titleNoDimension ? config : { ...config, titleNoDimension: true };
 }
 function annotationFieldSettings(preview: any, roles: AnnotationRole[]) {
   const formats = { ...preview.field_formats };
@@ -79,8 +84,8 @@ function annotationFieldSettings(preview: any, roles: AnnotationRole[]) {
   return { ...preview, schema, field_formats: formats };
 }
 function datasetDisplayName(source?: Dataset) {
-  if (!source) return '';
-  return source.updated_at || source.data_as_of ? `${source.name} ${formatUpdatedAt(source.updated_at || source.data_as_of)}` : source.name;
+  // The bottom dataset picker shows only the name; update times are listed in Datasets and the report refresh panel.
+  return source?.name || '';
 }
 function navigateTo(path: string, replace = false) {
   if (offlineExport || portalId) return; // exported file:// pages and portal pages keep their own URL
@@ -102,7 +107,7 @@ function chartRequest(config: ChartConfig, dataset: Dataset, global: Filter[], p
   return JSON.stringify({ ...(published ? { snapshot_id: dataset.snapshot_id } : {}), fields: dataset.schema.map(f => f.name), filters, limit: config.type === 'table' ? Math.min(pageSize, config.limit ? config.limit - page * pageSize : pageSize) : config.limit || null, offset: config.type === 'table' ? page * pageSize : 0, dimension: ['kpi', 'gauge'].includes(config.type) ? undefined : config.dimension, dimensions: ['bar', 'line', 'area', 'mixed'].includes(config.type) ? config.dimensions : undefined, measure: config.measure, measures: ['bar', 'line', 'area', 'mixed', 'candlestick'].includes(config.type) ? config.measures : undefined, second_measure: ['bar', 'line', 'area', 'mixed', 'scatter'].includes(config.type) ? config.secondMeasure : undefined, second_dimension: ['bar', 'line', 'area', 'mixed'].includes(config.type) ? config.legendField || undefined : ['tree', 'treemap', 'sunburst', 'sankey', 'heatmap'].includes(config.type) ? config.secondDimension : undefined, chart_type: config.type, sort_measure: (config.measures || [config.measure, config.secondMeasure]).includes(config.sortMeasure) ? config.sortMeasure : undefined, ...(!raw ? { aggregation: config.aggregation || 'sum', metric_aggregations: Object.fromEntries(Object.entries(config.metricAggregations || {}).filter(([field]) => (config.measures || [config.measure, config.secondMeasure]).includes(field))), metric_expression: config.expression || undefined } : {}), sort: chartSort(config) });
 }
 
-function ChartTile({ tile, dataset, global: incomingFilters, showUpdatedAt, theme, highlightWeekends, titleNoDimension, annotations, published = false }: { annotations: Annotation[]; highlightWeekends?: boolean; titleNoDimension?: boolean; published?: boolean; theme: { palette: string; colors?: string[]; locale?: 'en' | 'zh-CN' }; tile: Tile; dataset?: Dataset; global: Filter[]; showUpdatedAt: boolean }) {
+function ChartTile({ tile, dataset, baselines, global: incomingFilters, showUpdatedAt, theme, highlightWeekends, annotations, published = false }: { baselines?: ChartConfig['baselines']; annotations: Annotation[]; highlightWeekends?: boolean; published?: boolean; theme: { palette: string; colors?: string[]; locale?: 'en' | 'zh-CN' }; tile: Tile; dataset?: Dataset; global: Filter[]; showUpdatedAt: boolean }) {
   const filterKey = JSON.stringify(incomingFilters);
   const global = useMemo(() => JSON.parse(filterKey) as Filter[], [filterKey]);
   const { locale: defaultLocale } = useChartLanguage();
@@ -123,7 +128,7 @@ function ChartTile({ tile, dataset, global: incomingFilters, showUpdatedAt, them
   // Cached results render without the entry animation, so revisiting a tab shows charts immediately.
   const [fromCache, setFromCache] = useState(() => chartResults.has(cacheKey));
   const dataConfig = result.config ? Object.fromEntries((['dimension', 'dimensions', 'measure', 'measures', 'secondMeasure', 'secondDimension', 'legendField', 'legendOrder', 'aggregation', 'metricAggregations', 'expression'] as const).map(key => [key, result.config![key]])) : {};
-  const displayConfig = useMemo(() => ({ ...tile.config, ...dataConfig, title: chartTitle(titleConfig({ ...tile.config, ...dataConfig }, { titleNoDimension }), dataset, global, locale), ...theme, highlightWeekends, annotations: tile.config.showAnnotations && dataset?.schema.find(field => field.name === tile.config.dimension)?.type === 'date' ? annotations : [], locale, colors: theme.palette === 'random' ? randomChartColors(tile.id) : theme.colors, fieldFormats: dataset?.field_formats }), [tile.config, result.config, tile.id, theme, highlightWeekends, titleNoDimension, annotations, dataset?.schema, dataset?.field_formats, global, locale]);
+  const displayConfig = useMemo(() => ({ ...tile.config, ...dataConfig, baselines, title: chartTitle({ ...tile.config, ...dataConfig }, dataset, global, locale), ...theme, highlightWeekends, annotations: tile.config.showAnnotations && ['date', 'string'].includes(dataset?.schema.find(field => field.name === tile.config.dimension)?.type || '') ? annotations : [], locale, colors: theme.palette === 'random' ? randomChartColors(tile.id) : theme.colors, fieldFormats: dataset?.field_formats, fieldLabels: Object.fromEntries((dataset?.schema || []).map(field => [field.name, field.display_name || field.name])) }), [tile.config, result.config, tile.id, baselines, theme, highlightWeekends, annotations, dataset?.schema, dataset?.field_formats, global, locale]);
   useEffect(() => setPage(0), [config.type, config.dimension, config.dimensions, config.measure, config.measures, config.secondMeasure, config.secondDimension, config.legendField, config.aggregation, config.metricAggregations, config.sortMeasure, config.expression, config.sort, config.xAxisSort, config.limit, global, pageSize]);
   useEffect(() => {
     if (!configured || !dataset) { setError(''); setResult({ rows: [] }); setLoading(false); return; }
@@ -136,8 +141,9 @@ function ChartTile({ tile, dataset, global: incomingFilters, showUpdatedAt, them
       .then(data => { const value = { ...data, config: { ...config, legendOrder: data.legend_order } }; rememberChartResult(cacheKey, value); if (active) setResult(value); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [cacheKey, configured]);
+  const baselineText = baselines?.map(baseline => formatBaseline(baseline, locale)).join(' · ');
   if (!configured) return config.type === 'candlestick' ? <p className="tile-error">{t('请选择开盘、收盘、最低、最高四个数值字段')}</p> : null;
-  return <>{error ? <div role="alert" className="tile-error">{error}</div> : loading && !result.rows.length ? <p className="tile-error">{t("加载中…")}</p> : result.rows.length || tile.config.type === 'table' ? <ChartView config={displayConfig} rows={result.rows} page={page} pageSize={pageSize} onPageChange={setPage} animate={!fromCache} /> : <p className="tile-error">{t("没有符合筛选条件的数据")}</p>}{showUpdatedAt && result.data_as_of && <small className="data-time">{t("更新时间")} {formatUpdatedAt(result.data_as_of)}</small>}</>;
+  return <>{error ? <div role="alert" className="tile-error">{error}</div> : loading && !result.rows.length ? <p className="tile-error">{t("加载中…")}</p> : result.rows.length || tile.config.type === 'table' ? <ChartView config={displayConfig} rows={result.rows} page={page} pageSize={pageSize} onPageChange={setPage} animate={!fromCache} /> : <p className="tile-error">{t("没有符合筛选条件的数据")}</p>}{baselines?.length && !baselineAxisCharts.includes(config.type) ? <small className="chart-baselines" title={baselineText}>{baselineText}</small> : null}{showUpdatedAt && result.data_as_of && <small className="data-time">{t("更新时间")} {formatUpdatedAt(result.data_as_of)}</small>}</>;
 }
 
 export default function App() {
@@ -164,8 +170,8 @@ export default function App() {
   // Bumped after every drag / resize so react-grid-layout always re-syncs to the saved layout. It only re-reads the
   // layout prop when it changes, and otherwise keeps its own (overlap-allowing) drag positions on screen.
   const [layoutRevision, setLayoutRevision] = useState(0);
-  // Resizing a single tile snaps its width to 1/3, 1/2 or 2/3 of the canvas when within one column of it.
   const [resizing, setResizing] = useState(false);
+  const [resizeShifts, setResizeShifts] = useState<Tile[]>([]);
   // The dragged component's original place stays outlined while dragging.
   const [draggingId, setDraggingId] = useState('');
   const [chartsScrolling, setChartsScrolling] = useState(false);
@@ -177,8 +183,9 @@ export default function App() {
   const [showImport, setShowImport] = useState(false), [paste, setPaste] = useState(''), [file, setFile] = useState<File | null>(null);
   const [sourceKind, setSourceKind] = useState<'static' | 'dynamic'>(() => { try { return localStorage.getItem('mybi.import-source-kind') === 'dynamic' ? 'dynamic' : 'static'; } catch { return 'static'; } });
   const lastSourceKind = useRef(sourceKind);
-  const selectSourceKind = (kind: 'static' | 'dynamic') => { setSourceKind(kind); lastSourceKind.current = kind; try { localStorage.setItem('mybi.import-source-kind', kind); } catch { setMessage(t('无法保存设置，请检查浏览器存储权限')); } };
+  const selectSourceKind = (kind: 'static' | 'dynamic') => { setSourceKind(kind); if (kind === 'dynamic') setAsBaseline(false); lastSourceKind.current = kind; try { localStorage.setItem('mybi.import-source-kind', kind); } catch { setMessage(t('无法保存设置，请检查浏览器存储权限')); } };
   const [asAnnotation, setAsAnnotation] = useState(false);
+  const [asBaseline, setAsBaseline] = useState(false);
   const [mergeAnnotations, setMergeAnnotations] = useState(false);
   const [refreshingReport, setRefreshingReport] = useState(false);
   const [queryResults, setQueryResults] = useState<Dataset | null>(null);
@@ -234,6 +241,9 @@ export default function App() {
   const [deleted, setDeleted] = useState<{ chart: Tile; index: number; expiresAt: number; session: number } | null>(null);
   const [editingSource, setEditingSource] = useState(false), [editingField, setEditingField] = useState('');
   const [editingDataset, setEditingDataset] = useState<Dataset | null>(null);
+  const [fieldSearch, setFieldSearch] = useState('');
+  const hasFieldPreview = !!preview;
+  useEffect(() => setFieldSearch(''), [showImport, hasFieldPreview, editingDataset?.id, sheet]);
   const dynamicImport = editingDataset ? !!editingDataset.dynamic : sourceKind === 'dynamic';
   const [viewingDataset, setViewingDataset] = useState(false);
   const [copied, setCopied] = useState<Tile | null>(null), [pasteArmed, setPasteArmed] = useState(false);
@@ -273,6 +283,7 @@ export default function App() {
   useEffect(() => {
     if (showImport) {
       setSourceKind(editingDataset ? editingDataset.dynamic ? 'dynamic' : 'static' : lastSourceKind.current);
+      setAsBaseline(!!editingDataset?.baseline_values);
       const roles = editingDataset?.annotation_fields;
       setAsAnnotation(!!roles && !!Object.keys(roles).length); setMergeAnnotations(!!editingDataset?.annotation_merge);
       setAnnotationOrder(roles && Object.keys(roles).length ? editingDataset!.schema.map(field => (Object.keys(roles) as AnnotationRole[]).find(role => roles[role] === field.name)!).filter(Boolean) : ['label', 'start', 'end', 'comment']);
@@ -306,6 +317,23 @@ export default function App() {
     return () => observer.disconnect();
   }, [showSettings, showReports]);
 
+  // The toolbar is only as wide as its longest English label (e.g. "Candlestick") on one line; Chinese labels are shorter.
+  // Measured with the buttons' own font and spacing, so it follows the responsive sizes.
+  useLayoutEffect(() => {
+    const fit = () => {
+      const root = appRef.current, button = root?.querySelector<HTMLElement>('.left-panel .chart-grid button'), panel = button?.closest<HTMLElement>('.left-panel'), icon = button?.querySelector('svg');
+      const context = document.createElement('canvas').getContext('2d');
+      if (!root || !button || !panel || !context) return;
+      const style = getComputedStyle(button), panelStyle = getComputedStyle(panel), px = (value: string) => parseFloat(value) || 0;
+      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const text = Math.max(...[...chartRegistry.map(chart => chart.source), '筛选器', '标题'].map(label => context.measureText(translate('en', label)).width));
+      const width = text + px(style.paddingLeft) + px(style.paddingRight) + px(style.borderLeftWidth) + px(style.borderRightWidth) + (icon ? px(getComputedStyle(icon).width) : 0) + px(style.columnGap) + px(panelStyle.paddingLeft) + px(panelStyle.paddingRight) + 4;
+      root.style.setProperty('--left-min', Math.ceil(width) + 'px');
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [language]);
   const setSidebarWidth = (side: 'left' | 'right', width: number) => {
     const root = appRef.current!;
     const style = getComputedStyle(root), tracks = style.gridTemplateColumns.split(' ').map(parseFloat);
@@ -353,15 +381,36 @@ export default function App() {
     if (selected && !/\.(csv|xlsx?)$/i.test(selected.name)) { setMessage(t("请选择 CSV、XLS 或 XLSX 文件")); return; }
     setEditingSource(true); setFile(selected); setSheets([]); setSheet(''); setMessage('');
   };
-  const history = useRef<Document[]>([]), future = useRef<Document[]>([]);
+  const reportDatasets = useMemo(() => {
+    const sources = new Map(datasets.map(source => [source.id, source]));
+    return importedIds.flatMap(value => {
+      const source = sources.get(value);
+      return source ? [source] : [];
+    });
+  }, [datasets, importedIds]);
+  const baselineOptions = useMemo(() => reportDatasets.flatMap(source => {
+    if (!source.baseline_values) return [];
+    const rows = Array.isArray(source.baseline_values) ? source.baseline_values : [source.baseline_values];
+    return rows.flatMap((values, row) => source.schema.flatMap(field => {
+      const value = values[field.name];
+      if (value === undefined) return [];
+      const fallback = [source.name, ...(rows.length > 1 ? [t('第 {0} 行', row + 1)] : []), field.display_name || field.name].join(' / ');
+      const dimension = source.baseline_labels?.[row];
+      const fieldLabel = field.display_name || field.name;
+      const label = !dimension ? fallback : Object.keys(values).length > 1 ? dimension + ' / ' + fieldLabel : dimension;
+      return [{ datasetId: source.id, field: field.name, row, label, value, format: source.field_formats?.[field.name] }];
+    }));
+  }), [reportDatasets, language]);
+  type EditorSnapshot = { document: Document; importedIds?: string[] };
+  const history = useRef<EditorSnapshot[]>([]), future = useRef<EditorSnapshot[]>([]);
   const current = useRef({ doc, name, datasets }); current.current = { doc, name, datasets };
   const session = useRef(0), saving = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   useEffect(() => {
     if (!id || !dirty) return;
-    setDrafts(previous => ({ ...previous, [id]: { document: { ...doc, datasets: datasets.filter(source => importedIds.includes(source.id)) }, name, version, selected, activeDatasetId, importedIds } }));
-  }, [id, dirty, doc, name, datasets, version, selected, activeDatasetId, importedIds]);
+    setDrafts(previous => ({ ...previous, [id]: { document: { ...doc, orderedDatasets: true, datasets: reportDatasets }, name, version, selected, activeDatasetId, importedIds } }));
+  }, [id, dirty, doc, name, reportDatasets, version, selected, activeDatasetId, importedIds]);
   useEffect(() => {
     try { localStorage.setItem('mybi.report-drafts', JSON.stringify(drafts)); }
     catch { setMessage(t('\u65e0\u6cd5\u8bb0\u5f55\u672c\u5730\u8349\u7a3f\uff0c\u8bf7\u4e3b\u52a8\u4fdd\u5b58')); }
@@ -384,7 +433,7 @@ export default function App() {
         setSavedDatasets(items);
         setDatasets(previous => previous.map(source => {
           const next = source.dynamic && items.find(item => item.id === source.id);
-          return next && JSON.stringify(next) !== JSON.stringify(source) ? next : source;
+          return next && (next.version ?? 0) >= (source.version ?? 0) && JSON.stringify(next) !== JSON.stringify(source) ? next : source;
         }));
       }).catch(error => { if (active) setMessage(error.message); });
     };
@@ -403,7 +452,7 @@ export default function App() {
   const keptTabs = [...visitedTabs.filter(tabId => tabs.some(tab => tab.id === tabId)), ...(visitedTabs.includes(activeTab.id) ? [] : [activeTab.id])];
   const displayColumns = grid.columns;
   const displayRows = Math.max(publishedView ? 1 : viewportRows, ...displayCharts.map(chart => chart.y + chart.h));
-  const annotationCharts = doc.charts.filter(chart => ['bar', 'line', 'area', 'mixed', 'candlestick', 'waterfall', 'boxplot', 'heatmap'].includes(chart.config.type) && !chart.config.horizontal && datasets.find(source => source.id === chart.datasetId)?.schema.some(field => field.name === chart.config.dimension && field.type === 'date'));
+  const annotationCharts = doc.charts.filter(chart => ['bar', 'line', 'area', 'mixed', 'candlestick', 'waterfall', 'boxplot', 'heatmap'].includes(chart.config.type) && !chart.config.horizontal && datasets.find(source => source.id === chart.datasetId)?.schema.some(field => field.name === chart.config.dimension && ['date', 'string'].includes(field.type)));
   const reportSchedule = doc.refreshSchedule || { enabled: false, time: defaultScheduleTime(), timezone: localTimeZone() };
   // Published view and exported page center the canvas at the width it had in the editor.
   useEffect(() => { setLocaleOverride(publishedView ? publishedTheme.locale || null : null); }, [publishedView, publishedTheme.locale]);
@@ -416,7 +465,7 @@ export default function App() {
     if (!publishedView || !main) return;
     const align = () => {
       // Measure the tab list container, not a tab: the list scrolls horizontally to show the active tab.
-      const bar = main.querySelector<HTMLElement>(':scope > .report-tabs-top'), list = bar?.querySelector<HTMLElement>('[role=tablist]'), surface = canvasRef.current;
+      const bar = workspaceScroll.current?.querySelector<HTMLElement>(':scope > .report-tabs-top'), list = bar?.querySelector<HTMLElement>('[role=tablist]'), surface = canvasRef.current;
       if (!bar || !list || !surface) return;
       const delta = surface.getBoundingClientRect().left - list.getBoundingClientRect().left;
       if (Math.abs(delta) > 0.5) bar.style.paddingLeft = Math.max(0, (parseFloat(getComputedStyle(bar).paddingLeft) || 0) + delta) + 'px';
@@ -429,23 +478,18 @@ export default function App() {
   }, [publishedView, tabs.length, publishedCanvasWidth, surfaceWidth]);
   // Published pages: scrolling down tucks the tab bar away, scrolling up brings it back.
   useEffect(() => {
-    const scroller = workspaceScroll.current, main = publishedWorkspace.current;
-    if (!publishedView || !scroller || !main) return;
-    let last = scroller.scrollTop, hidden = false;
-    const show = (next: boolean) => {
-      const bar = main.querySelector<HTMLElement>(':scope > .report-tabs-top');
-      if (!bar || next === hidden) return;
-      hidden = next;
-      bar.style.marginTop = next ? `-${bar.offsetHeight}px` : '0px';
-    };
+    const scroller = workspaceScroll.current;
+    const bar = scroller?.querySelector<HTMLElement>(':scope > .report-tabs-top');
+    if (!publishedView || !scroller || !bar) return;
+    let last = scroller.scrollTop;
     const scroll = () => {
       const top = scroller.scrollTop, delta = top - last;
       if (Math.abs(delta) < 4) return;
-      show(delta > 0 && top > 24);
+      bar.classList.toggle('report-tabs-hidden', delta > 0 && top > 24);
       last = top;
     };
     scroller.addEventListener('scroll', scroll, { passive: true });
-    return () => { scroller.removeEventListener('scroll', scroll); show(false); };
+    return () => { scroller.removeEventListener('scroll', scroll); bar.classList.remove('report-tabs-hidden'); };
   }, [publishedView, id, tabs.length]);
   const pageFilters = tabCharts.filter(chart => chart.config.type === 'filter');
   const filterIds = tile ? followedFilterIds(tile, tabCharts, dataset) : [];
@@ -453,25 +497,51 @@ export default function App() {
   const chosenFilterIds = tile ? tile.followFilterIds ?? filterIds : [];
   const setChartFilters = (chart: Tile, ids: string[]) => change({ ...doc, charts: tabCharts.map(item => item.id === chart.id ? { ...item, followFilterIds: ids } : item) });
   const chartFilters = (chart: Tile, charts = tabCharts) => canvasFilters.filter(filter => !!filter.sourceId && followedFilterIds(chart, charts, datasets.find(source => source.id === chart.datasetId)).includes(filter.sourceId));
-  const change = (next: Document, wholeReport = false) => {
+  const change = (next: Document, wholeReport = false, nextIds?: string[]) => {
     if (!wholeReport && next.charts !== doc.charts) next = { ...next, charts: [...doc.charts.filter(chart => (chart.tabId || tabs[0].id) !== activeTab.id), ...next.charts.map(chart => ({ ...chart, tabId: activeTab.id }))] };
     if (publishedView) { setDoc(next); return; }
-    history.current.push(doc); future.current = []; setDoc(next); setDirty(true);
+    history.current.push({ document: doc, importedIds: nextIds ? importedIds : undefined });
+    future.current = []; setDoc(next); setDirty(true);
+    if (nextIds) setImportedIds(nextIds);
   };
   const selectTab = (tabId: string) => {
     setActiveTabId(tabId); setSelected(''); setCommentChart(''); setDeleted(null); setPasteArmed(false);
     insertionRef.current = null; setInsertion(null); pasteAt.current = undefined;
     workspaceScroll.current?.scrollTo({ top: 0, left: 0 });
   };
-  // Magnetic widths while resizing: within one column of 1/4, 1/3, 1/2, 2/3 or 3/4 of the canvas, the width snaps to it
-  // (the edge opposite the dragged handle stays put). Mutating the item is how react-grid-layout accepts it.
-  const snapWidth = (item: Layout, old: Layout) => {
-    const columns = grid.columns;
-    const target = [columns / 4, columns / 3, columns / 2, (columns * 2) / 3, (columns * 3) / 4].find(value => Number.isInteger(value) && Math.abs(item.w - value) <= 1);
-    if (target === undefined || target === item.w) return;
-    const fromLeft = item.x !== old.x, right = item.x + item.w;
-    item.w = target;
-    item.x = Math.max(0, Math.min(fromLeft ? right - target : item.x, columns - target));
+  const divisions = guideDivisions[doc.guideType || 'quarters'] ?? guideDivisions.quarters;
+  const widths = Array.from({ length: divisions }, (_, index) => Math.round((index + 1) * grid.columns / divisions));
+  const snapWidth = (width: number, maxWidth: number) => {
+    let nearest: number | undefined;
+    for (const candidate of widths) {
+      if (candidate < minWidth(grid.columns) || candidate > maxWidth) continue;
+      if (nearest === undefined || Math.abs(candidate - width) < Math.abs(nearest - width)) nearest = candidate;
+    }
+    return nearest ?? width;
+  };
+  const snapResize = (item: Layout, old: Layout) => {
+    if (item.w === old.w && item.x === old.x) return [];
+    const fromLeft = item.x !== old.x;
+    // Measure from the fixed edge so both resize directions use the same packing rules.
+    const start = ({ x, w }: Pick<Tile, 'x' | 'w'>) => fromLeft ? grid.columns - x - w : x;
+    const fixed = start(old);
+    const neighbors = tabCharts.filter(chart => chart.y === old.y && start(chart) >= fixed + old.w).sort((a, b) => start(a) - start(b));
+    const wall = (position: Pick<Tile, 'x' | 'y' | 'w' | 'h'>) => Math.min(grid.columns, ...tabCharts
+      .filter(chart => chart.y !== old.y && chart.y < position.y + position.h && chart.y + chart.h > position.y && start(chart) >= start(position) + position.w)
+      .map(start));
+    const outerEdge = neighbors.reduceRight((edge, chart) => Math.min(edge, wall(chart)) - chart.w, grid.columns);
+    const limit = Math.max(old.w, Math.min(outerEdge, wall(old)) - fixed);
+    const requested = Math.min(item.w, limit);
+    const snapped = snapWidth(requested, limit);
+    item.w = requested === limit || (requested > old.w && snapped <= old.w) ? requested : snapped;
+    item.x = fromLeft ? grid.columns - fixed - item.w : fixed;
+    let edge = fixed + item.w;
+    return neighbors.flatMap(chart => {
+      const next = Math.max(edge, start(chart));
+      edge = next + chart.w;
+      const x = fromLeft ? grid.columns - next - chart.w : next;
+      return x === chart.x ? [] : [{ ...chart, x }];
+    });
   };
   const updateLayout = (layout: Layout[], movedId?: string) => {
     const charts = tabCharts.map(chart => {
@@ -508,7 +578,7 @@ export default function App() {
   const sidewaysInsertion = insertion && insertion.side !== 'top' && insertion.side !== 'bottom' ? insertion : null;
   const sidewaysRow = sidewaysInsertion?.row;
   const previewShift = (chart: Tile) => {
-    const placed = sidewaysInsertion && chart.id !== sidewaysInsertion.movingId && chart.y === sidewaysRow ? sidewaysInsertion.charts.find(item => item.id === chart.id) : undefined;
+    const placed = resizeShifts.find(item => item.id === chart.id) || (sidewaysInsertion && chart.id !== sidewaysInsertion.movingId && chart.y === sidewaysRow ? sidewaysInsertion.charts.find(item => item.id === chart.id) : undefined);
     // Keep the row where it is on screen (the drop may also close rows the dragged chart leaves, which only applies on release).
     if (!placed || (placed.x === chart.x && placed.w === chart.w && placed.h === chart.h)) return undefined;
     const box = gridPixels({ ...placed, y: chart.y });
@@ -524,13 +594,6 @@ export default function App() {
     const moving = tabCharts.find(chart => chart.id === movingId);
     const canvas = canvasRef.current?.getBoundingClientRect();
     let target: Tile | undefined, side: InsertSide | undefined;
-    // The dragged chart's original place stays outlined and is inert: over it nothing is previewed and a release there
-    // leaves the layout unchanged.
-    const originBox = canvas && moving && gridPixels(moving);
-    if (canvas && originBox && point.clientX >= canvas.left + originBox.left && point.clientX <= canvas.left + originBox.left + originBox.width && point.clientY >= canvas.top + originBox.top && point.clientY <= canvas.top + originBox.top + originBox.height) {
-      insertionRef.current = null; setInsertion(null);
-      return null;
-    }
     for (const candidate of tabCharts) {
       if (candidate.id === movingId) continue;
       // Hit-test the saved grid position, not the DOM: a sideways preview shifts cards, which must not change the target.
@@ -547,16 +610,23 @@ export default function App() {
     }
     // Blank space beside a row that fits the dragged chart's width: preview it landing there at its own width.
     if (!target && moving && canvas && point.clientX >= canvas.left && point.clientX <= canvas.right && point.clientY >= canvas.top) {
-      const pointerRow = Math.floor((point.clientY - canvas.top) / ROW_UNIT), column = Math.floor((point.clientX - canvas.left) / ((canvas.width + 8) / grid.columns));
-      const rowY = [...new Set(tabCharts.filter(chart => chart.id !== movingId).map(chart => chart.y))].find(y => pointerRow >= y && pointerRow < y + Math.max(...tabCharts.filter(chart => chart.id !== movingId && chart.y === y).map(chart => chart.h)));
-      const placed = rowY === undefined ? null : placeInRowGap(tabCharts, movingId, rowY, column, grid.columns);
+      const pitch = (canvas.width + 8) / grid.columns;
+      const pointerRow = Math.floor((point.clientY - canvas.top) / ROW_UNIT), column = Math.floor((point.clientX - canvas.left) / pitch);
+      const sameRow = pointerRow >= moving.y && pointerRow < moving.y + moving.h;
+      const rowY = sameRow ? moving.y : [...new Set(tabCharts.filter(chart => chart.id !== movingId).map(chart => chart.y))].find(y => pointerRow >= y && pointerRow < y + Math.max(...tabCharts.filter(chart => chart.id !== movingId && chart.y === y).map(chart => chart.h)));
+      const preferredX = sameRow ? Math.round((point.clientX - canvas.left - dragAnchor.current.x) / pitch) : undefined;
+      const placed = rowY === undefined ? null : placeInRowGap(tabCharts, movingId, rowY, column, grid.columns, snapWidth, preferredX);
       const landed = placed?.find(chart => chart.id === movingId);
       if (placed && landed && rowY !== undefined) {
         const current = insertionRef.current;
         if (current?.movingId === movingId && current.side === 'gap' && current.row === rowY && current.charts.find(chart => chart.id === movingId)?.x === landed.x) return current;
-        const next = { charts: arrangeAfterChange(tabCharts, placed, grid.columns), movingId, side: 'gap' as const, row: rowY };
+        const next = { charts: arrangeAfterChange(tabCharts, placed, grid.columns, movingId), movingId, side: 'gap' as const, row: rowY };
         insertionRef.current = next; setInsertion(next);
         return next;
+      }
+      if (sameRow) {
+        insertionRef.current = null; setInsertion(null);
+        return null;
       }
     }
     if (!target && moving && canvas && point.clientX >= canvas.left && point.clientX <= canvas.right && point.clientY >= canvas.top) {
@@ -568,10 +638,10 @@ export default function App() {
     if (insertionRef.current?.movingId === movingId && target && insertionRef.current.targetId === target.id && insertionRef.current.side === side) return insertionRef.current;
     let next: typeof insertion = null;
     if (moving && target && side) {
-      let placed = insertGridTile(tabCharts, movingId, target.id, side, grid.columns);
+      let placed = insertGridTile(tabCharts, movingId, target.id, side, grid.columns, snapWidth);
       // A full row (4) or a sideways drop that cannot fit falls back to inserting above / below that row.
-      if (!placed && (side === 'left' || side === 'right')) { side = 'bottom'; placed = insertGridTile(tabCharts, movingId, target.id, side, grid.columns); }
-      if (placed) next = { charts: arrangeAfterChange(tabCharts, placed, grid.columns), movingId, targetId: target.id, side, row: target.y };
+      if (!placed && (side === 'left' || side === 'right')) { side = 'bottom'; placed = insertGridTile(tabCharts, movingId, target.id, side, grid.columns, snapWidth); }
+      if (placed) next = { charts: arrangeAfterChange(tabCharts, placed, grid.columns, movingId), movingId, targetId: target.id, side, row: target.y };
     }
     insertionRef.current = next; setInsertion(next);
     return next;
@@ -580,12 +650,40 @@ export default function App() {
   const patchConfig = (next: Partial<ChartConfig>) => {
     if (!tile) return;
     if ((['type', 'dimension', 'dimensions', 'measure', 'measures', 'secondDimension', 'secondMeasure', 'legendField', 'aggregation', 'metricAggregations', 'expression'] as const).some(key => key in next && JSON.stringify(next[key]) !== JSON.stringify(tile.config[key]))) next = { ...next, autoTitle: true };
-    patchTile({ ...(!tile.datasetId && dataset && ['dimension', 'dimensions', 'measure', 'measures', 'secondDimension', 'secondMeasure', 'legendField'].some(field => field in next) ? { datasetId: dataset.id } : {}), config: { ...tile.config, ...next } });
+    patchTile({ ...(!tile.datasetId && dataset && !dataset.baseline_values && ['dimension', 'dimensions', 'measure', 'measures', 'secondDimension', 'secondMeasure', 'legendField'].some(field => field in next) ? { datasetId: dataset.id } : {}), config: { ...tile.config, ...next } });
+  };
+  const descriptionEditor = tile && <label>{t('说明信息')}<textarea aria-label={t('说明信息')} rows={3} value={tile.config.description || ''} placeholder={t('填写后可点击或悬停标题旁的问号查看')} onChange={event => patchConfig({ description: event.target.value })} /></label>;
+  const restoreEdit = (from: EditorSnapshot[], to: EditorSnapshot[]) => {
+    const snapshot = from.pop();
+    if (!snapshot) return;
+    to.push({ document: doc, importedIds: snapshot.importedIds ? importedIds : undefined });
+    if (snapshot.importedIds) setImportedIds(snapshot.importedIds);
+    setDeleted(null); setDoc(snapshot.document); setDirty(true);
+  };
+  const moveDataset = (from: string, to: string) => {
+    const origin = importedIds.indexOf(from), target = importedIds.indexOf(to);
+    if (origin < 0 || target < 0 || origin === target) return;
+    const next = [...importedIds];
+    next.splice(origin, 1);
+    next.splice(target, 0, from);
+    change(doc, true, next);
+  };
+  const removeDataset = (datasetId: string) => {
+    const remaining = importedIds.filter(value => value !== datasetId);
+    change({
+      ...doc,
+      datasetFolders: doc.datasetFolders?.map(folder => ({ ...folder, datasetIds: folder.datasetIds.filter(value => value !== datasetId) })),
+      datasets: doc.datasets.filter(source => source.id !== datasetId),
+      charts: doc.charts.map(chart => chart.datasetId === datasetId ? { ...chart, datasetId: '' } : chart),
+    }, true, remaining);
+    if (activeDatasetId === datasetId) setActiveDatasetId(remaining[remaining.length - 1] || '');
+    if (tile?.datasetId === datasetId) setSelected('');
   };
   const selectDataset = (datasetId: string) => {
     const source = datasets.find(item => item.id === datasetId);
     if (!source) return;
     setActiveDatasetId(datasetId);
+    if (source.baseline_values) { setSelected(''); return; }
     if (tile && tile.datasetId !== datasetId) {
       const c = tile.config;
       const dimensions = source.schema.filter(field => ['string', 'date'].includes(field.type));
@@ -673,20 +771,30 @@ export default function App() {
     if (publishing) return;
     setPublishing(true);
     try {
-      const sources = datasets.filter(source => importedIds.includes(source.id) || doc.charts.some(chart => chart.datasetId === source.id));
+      const { refreshSchedule: _schedule, datasetFolders: _folders, ...reportDocument } = doc;
       const text = async (path: string) => { const response = await fetch(path, { cache: 'no-store' }); if (!response.ok) throw new Error(t('导出组件缺失，请重新构建 MyBI')); return response.text(); };
-      const [runtime, styles] = await Promise.all([text('/export/runtime.js'), text('/export/runtime.css')]);
-      const data = Object.fromEntries(await Promise.all(sources.map(async source => [source.id, await api(`/datasets/${encodeURIComponent(source.id)}/export-rows`)] as const)));
-      const annotationRows = Object.fromEntries(await Promise.all(annotationSources.filter(source => sources.includes(source)).map(async source => {
+      const [runtime, styles, sources] = await Promise.all([
+        text('/export/runtime.js'),
+        text('/export/runtime.css'),
+        api('/dashboards/publication-datasets', json({ name: name.trim() || t('未命名报表'), document: { ...reportDocument, datasets: reportDatasets } })) as Promise<Dataset[]>,
+      ]);
+      const data = Object.fromEntries(await Promise.all(sources.map(async source => [source.id, await api(`/datasets/${encodeURIComponent(source.id)}/export-rows?snapshot_id=${encodeURIComponent(source.snapshot_id || '')}`)] as const)));
+      const annotationRows = Object.fromEntries(await Promise.all(sources.filter(source => Object.keys(source.annotation_fields || {}).length).map(async source => {
         const rows: unknown[] = [];
         for (let offset = 0; ; offset += 1000) {
-          const result = await api(`/datasets/${source.id}/view-query`, json({ fields: Object.values(source.annotation_fields!), chart_type: 'annotation', limit: 1000, offset }));
+          const result = await api(`/datasets/${source.id}/view-query`, json({ snapshot_id: source.snapshot_id, fields: Object.values(source.annotation_fields!), chart_type: 'annotation', limit: 1000, offset }));
           rows.push(...result.rows);
           if (result.rows.length < 1000) return [source.id, rows] as const;
         }
       })));
-      const { refreshSchedule: _schedule, ...reportDocument } = doc;
-      const payload: ExportPayload = { report: { id: id || 'export', name: name.trim() || t('未命名报表'), document: { ...reportDocument, datasets: sources.map(source => ({ ...source, snapshot_id: data[source.id].snapshot_id, data_as_of: data[source.id].data_as_of, dynamic: source.dynamic ? { schedule: { enabled: false, time: '00:00', timezone: 'UTC' } } : undefined })) }, theme: { ...theme, locale: getChartLocale(), canvasWidth: canvasRef.current?.clientWidth } }, canvasWidth: canvasRef.current?.clientWidth, data, annotations: annotationRows };
+      const locale = getChartLocale();
+      const sourcesById = new Map(sources.map(source => [source.id, source]));
+      const charts = reportDocument.charts.map(chart => {
+        const { config } = chart;
+        if (config.autoTitle === false || config.type === 'filter' || config.type === 'title') return chart;
+        return { ...chart, config: { ...config, title: chartTitle(config, sourcesById.get(chart.datasetId), [], locale) } };
+      });
+      const payload: ExportPayload = { report: { id: id || 'export', name: name.trim() || t('未命名报表'), document: { ...reportDocument, charts, datasets: sources.map(source => ({ ...source, snapshot_id: data[source.id].snapshot_id, data_as_of: data[source.id].data_as_of, dynamic: source.dynamic ? { schedule: { enabled: false, time: '00:00', timezone: 'UTC' } } : undefined })) }, theme: { ...theme, locale, canvasWidth: canvasRef.current?.clientWidth } }, canvasWidth: canvasRef.current?.clientWidth, data, annotations: annotationRows };
       // Inline the few root-relative images so the file works offline.
       const images = [...new Set([...`${runtime}${styles}`.matchAll(/\/(?:import-icons\/[\w.-]+\.svg|dialogue_bubble\.svg)/g)].map(match => match[0]))];
       const inlined = new Map(await Promise.all(images.map(async path => [path, 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(await text(path))))] as const)));
@@ -708,16 +816,17 @@ export default function App() {
       // and everything it overlaps below moves down. Clicks under the last component paste right after it.
       const bottom = Math.max(0, ...tabCharts.map(chart => chart.y + chart.h));
       const w = Math.min(copied.w, grid.columns);
-      const x = Math.max(0, Math.min(at.x, grid.columns - w));
       // A click on the thin gap between two stacked tiles falls inside the upper tile's last row: place the copy
       // below whatever tile covers the clicked row, so only tiles underneath move down.
       let y = Math.max(0, Math.min(at.y, bottom));
+      const occupiedRow = tabCharts.some(chart => chart.y <= y && y < chart.y + chart.h);
+      const x = occupiedRow ? Math.max(0, Math.min(at.x, grid.columns - w)) : 0;
       const covering = tabCharts.find(chart => chart.y <= y && y < chart.y + chart.h && chart.x < x + w && chart.x + chart.w > x);
-      if (covering) y = covering.y + covering.h;
+      if (covering && at.x >= 0 && at.y >= 0) y = covering.y + covering.h;
       const copy = { ...structuredClone(copied), id: crypto.randomUUID(), w, x, y };
       if (copy.config.type === 'filter') copy.config.title = nextFilterTitle(tabCharts);
-      else copy.config = nextMetricConfig(copy.config, datasets.find(item => item.id === copy.datasetId));
-      change({ ...doc, charts: pushGridTiles([...tabCharts, copy], [copy]) }); setCopied(structuredClone(copy)); setSelected(copy.id); setActiveDatasetId(copy.datasetId); setPasteArmed(false); setMessage(t("已粘贴，可在右侧修改图表"));
+      else if (copy.config.type !== 'title') copy.config = nextMetricConfig(copy.config, datasets.find(item => item.id === copy.datasetId));
+      change({ ...doc, charts: pushGridTiles([...tabCharts, copy], [copy]) }); setCopied(structuredClone(copy)); setSelected(copy.id); if (copy.config.type !== 'title') setActiveDatasetId(copy.datasetId); setPasteArmed(false); setMessage(t("已粘贴，可在右侧修改图表"));
       return;
     }
     // No click position (Ctrl+V before clicking the canvas): first free space, else after the last component.
@@ -726,9 +835,22 @@ export default function App() {
     if (!position) { setMessage(t("图表宽度超出画布，请调整图表宽度")); return; }
     const copy = { ...structuredClone(copied), id: crypto.randomUUID(), ...position };
     if (copy.config.type === 'filter') copy.config.title = nextFilterTitle(tabCharts);
-    else copy.config = nextMetricConfig(copy.config, datasets.find(item => item.id === copy.datasetId));
+    else if (copy.config.type !== 'title') copy.config = nextMetricConfig(copy.config, datasets.find(item => item.id === copy.datasetId));
     // Later pastes continue from this copy, stepping through the remaining metrics.
-    change({ ...doc, charts: [...tabCharts, copy] }); setCopied(structuredClone(copy)); setSelected(copy.id); setActiveDatasetId(copy.datasetId); setPasteArmed(false); setMessage(t("已粘贴，可在右侧修改图表"));
+    change({ ...doc, charts: [...tabCharts, copy] }); setCopied(structuredClone(copy)); setSelected(copy.id); if (copy.config.type !== 'title') setActiveDatasetId(copy.datasetId); setPasteArmed(false); setMessage(t("已粘贴，可在右侧修改图表"));
+  };
+  const clickCanvas = (event: React.MouseEvent<HTMLDivElement>) => {
+    if ((event.target as Element).closest('.chart-card,.report-tabs')) return;
+    const canvas = canvasRef.current;
+    if (!publishedView && canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const at = { x: Math.floor((event.clientX - rect.left) / ((rect.width + 8) / grid.columns)), y: Math.floor((event.clientY - rect.top) / ROW_UNIT) };
+      pasteAt.current = at;
+      canvas.focus({ preventScroll: true });
+      if (pasteArmed) { pasteChart(at); return; }
+    }
+    setSelected('');
+    setCommentChart('');
   };
   useEffect(() => {
     const paste = (event: KeyboardEvent) => {
@@ -775,8 +897,14 @@ export default function App() {
   }, [deleted]);
   useEffect(() => { if (!publicReportAccess) refresh(); }, []);
   const addChart = (type: ChartType) => {
+    if (type === 'title') {
+      const added: Tile = { id: crypto.randomUUID(), datasetId: '', config: { type }, filters: [], filterMode: 'global', x: 0, y: Math.max(0, ...tabCharts.map(chart => chart.y + chart.h)), w: grid.columns, h: titleRows };
+      change({ ...doc, charts: [...tabCharts, added] });
+      setSelected(added.id);
+      return;
+    }
     const sourceId = type === 'filter' && tile ? tile.datasetId : importedIds.includes(activeDatasetId) ? activeDatasetId : importedIds[0] || activeDatasetId;
-    const source = datasets.find(item => item.id === sourceId) || dataset;
+    const source = datasets.find(item => item.id === sourceId && !item.baseline_values) || (dataset && !dataset.baseline_values ? dataset : undefined) || reportDatasets.find(item => !item.baseline_values && !Object.keys(item.annotation_fields || {}).length);
     if (!source) { setEditingSource(false); setEditingField(''); setEditingDataset(null); setShowImport(true); return; }
     const newId = crypto.randomUUID();
     const w = type === 'filter' ? Math.min(grid.columns, Math.max(minWidth(grid.columns), Math.ceil(188 / (((canvasRef.current?.clientWidth || 720) + 8) / grid.columns)))) : grid.columns, h = type === 'filter' ? FILTER_DEFAULT_ROWS : Math.min(10, grid.rows), position = type === 'filter' ? { x: tile ? Math.min(tile.x, grid.columns - w) : 0, y: tile ? tile.y + tile.h : Math.max(0, ...tabCharts.map(chart => chart.y + chart.h)) } : findGridSpace(tabCharts, w, h, grid) || { x: 0, y: Math.max(0, ...tabCharts.map(chart => chart.y + chart.h)) };
@@ -791,7 +919,7 @@ export default function App() {
     saving.current = true; setIsSaving(true);
     const token = session.current, savedDoc = doc, savedName = name, savedDatasets = datasets;
     try {
-      const body = { name, document: { ...doc, canvasWidth: canvasRef.current?.clientWidth || doc.canvasWidth, refreshSchedule: reportSchedule, datasets: datasets.filter(source => importedIds.includes(source.id)) }, version };
+      const body = { name, document: { ...doc, canvasWidth: canvasRef.current?.clientWidth || doc.canvasWidth, refreshSchedule: reportSchedule, orderedDatasets: true, datasets: reportDatasets }, version };
       let saved;
       try { saved = await api(id ? `/dashboards/${id}` : '/dashboards', { ...json(body), method: id ? 'PUT' : 'POST' }); }
       catch (error) {
@@ -825,7 +953,8 @@ export default function App() {
       const draft = useDraft ? drafts[value] : undefined;
       if (draft?.document?.charts && draft.document.datasets) { item.document = draft.document; item.name = draft.name; }
       else if (useDraft) { setMessage(t('\u672c\u5730\u8349\u7a3f\u4e0d\u53ef\u7528')); return; }
-      const ids = [...new Set<string>([...item.document.charts.map((chart: Tile) => chart.datasetId).filter(Boolean), ...(item.document.datasets || []).map((source: Dataset) => source.id)])];
+      const savedSources: Dataset[] = item.document.datasets || [];
+      const ids = [...new Set([...savedSources.map(source => source.id), ...item.document.charts.map((chart: Tile) => chart.datasetId).filter(Boolean) as string[]])];
       const sources = await Promise.allSettled(ids.map(async sourceId => {
         if (draft || !item.datasets) return api('/datasets/' + sourceId);
         const source = item.datasets.find((source: Dataset) => source.id === sourceId);
@@ -835,7 +964,9 @@ export default function App() {
       if (session.current !== token) return;
       for (const source of sources) if (source.status === 'fulfilled') rememberDataset(source.value);
       if (draft) for (const source of draft.document.datasets) rememberDataset(source);
-      setPublishedView(false); setPreviewMode(false); setCommentChart(''); rememberDashboard(item.id); navigateTo('/reports/' + encodeURIComponent(item.id) + (draft ? '?draft=1' : ''), replace); setShowReports(false); setDoc(normalizeDocument(item.document)); setActiveTabId(''); setName(item.name); setId(item.id); setVersion(item.version); setDirty(!!draft); setRestoredDraft(!!draft); setImportedIds(draft?.importedIds || sources.flatMap((source, index) => source.status === 'fulfilled' ? [ids[index]] : [])); setSelected(''); setActiveDatasetId(draft?.activeDatasetId || item.document.charts[0]?.datasetId || ids[0] || ''); setShowSettings(false); setPanel('charts'); history.current = []; future.current = [];
+      const available = sources.flatMap((source, index) => source.status === 'fulfilled' ? [{ id: ids[index], localId: source.value.local_id ?? savedSources.find(saved => saved.id === ids[index])?.local_id ?? Infinity }] : []);
+      if (!item.document.orderedDatasets) available.sort((a, b) => a.localId - b.localId);
+      setPublishedView(false); setPreviewMode(false); setCommentChart(''); rememberDashboard(item.id); navigateTo('/reports/' + encodeURIComponent(item.id) + (draft ? '?draft=1' : ''), replace); setShowReports(false); setDoc(normalizeDocument(item.document)); setActiveTabId(''); setName(item.name); setId(item.id); setVersion(item.version); setDirty(!!draft); setRestoredDraft(!!draft); setImportedIds(draft?.importedIds || available.map(source => source.id)); setSelected(''); setActiveDatasetId(draft?.activeDatasetId || item.document.charts[0]?.datasetId || ids[0] || ''); setShowSettings(false); setPanel('charts'); history.current = []; future.current = [];
     } catch (e) { if (session.current === token) { setMessage((e as Error).message); navigateTo(activePath, true); } }
     finally { if (session.current === token) setOpeningReport(false); }
   };
@@ -847,11 +978,11 @@ export default function App() {
     link.href = URL.createObjectURL(await response.blob()); link.download = reportName + '.zip'; link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   };
-  const exportReport = async (reportId?: string) => {
+  const exportReport = async (reportId: string) => {
     setReportBusy(true);
     try {
-      if (reportId) { const source = await api(`/dashboards/${reportId}`); await downloadReport(source.name, source.document); }
-      else await downloadReport(name.trim(), { ...doc, canvasWidth: canvasRef.current?.clientWidth || doc.canvasWidth, refreshSchedule: reportSchedule, datasets: datasets.filter(source => importedIds.includes(source.id)) });
+      const source = await api(`/dashboards/${reportId}`);
+      await downloadReport(source.name, source.document);
       setMessage(t('报表已导出'));
     } catch (error) { setMessage((error as Error).message); } finally { setReportBusy(false); }
   };
@@ -909,7 +1040,7 @@ export default function App() {
     try {
       let saved;
       if (reportId) {
-        const draft = reportId === id && dirty ? { name, document: { ...doc, datasets: datasets.filter(source => importedIds.includes(source.id)) }, version } : drafts[reportId];
+        const draft = reportId === id && dirty ? { name, document: { ...doc, orderedDatasets: true, datasets: reportDatasets }, version } : drafts[reportId];
         saved = draft ? await api(`/dashboards/${reportId}`, { ...json({ name: draft.name, document: draft.document, version: draft.version }), method: 'PUT' }) : await api(`/dashboards/${reportId}`);
         if (draft) {
           clearDraft(reportId);
@@ -1029,7 +1160,7 @@ export default function App() {
       const overrides = preview ? Object.fromEntries(preview.schema.filter(annotated).map((f: any) => [f.source || f.name, f.type])) : {};
       const renames = preview ? Object.fromEntries(preview.schema.filter(annotated).map((f: any) => [f.source || f.name, dynamicDraft && editingDataset ? f.target || f.source || f.name : editingDataset && editingSource ? f.source || f.name : f.name])) : {};
       const formats = preview ? Object.fromEntries(preview.schema.filter(annotated).filter((f: any) => ['number', 'integer'].includes(f.type) || (['string', 'date'].includes(f.type) && (preview.field_formats?.[f.source || f.name]?.dateFormat || preview.field_formats?.[f.source || f.name]?.valueLabels))).map((f: any) => [editingDataset && editingSource ? f.source || f.name : f.name.trim(), { valueLabels: preview.field_formats?.[f.source || f.name]?.valueLabels, dateFormat: preview.field_formats?.[f.source || f.name]?.dateFormat, kind: preview.field_formats?.[f.source || f.name]?.kind || (f.type === 'integer' ? 'integer' : 'decimal'), format: preview.field_formats?.[f.source || f.name]?.format || 'number', rounding: preview.field_formats?.[f.source || f.name]?.rounding || defaultRounding, decimals: preview.field_formats?.[f.source || f.name]?.decimals ?? (f.type === 'integer' ? 0 : defaultDecimals) }])) : {};
-      signature = JSON.stringify({ annotationFields, mergeAnnotations, fieldOrder, overrides, renames, formats, datasetName, dynamicDraft, previewId: preview?.preview_id, paste: file ? undefined : paste, file: file && [file.name, file.size, file.lastModified], selectedSheet, encoding, delimiter, hasHeader, datasetId: editingDataset?.id, version: editingDataset?.version });
+      signature = JSON.stringify({ annotationFields, mergeAnnotations, fieldOrder, overrides, renames, formats, datasetName, dynamicDraft, previewId: preview?.preview_id, paste: file ? undefined : paste, file: file && [file.name, file.size, file.lastModified], selectedSheet, encoding, delimiter, hasHeader, asBaseline, datasetId: editingDataset?.id, version: editingDataset?.version });
       const confirmConversion = confirmImport && reviewedImport.current === signature;
       if (confirmImport && dynamicDraft) {
         const dynamicFormats = editingDataset ? Object.fromEntries(Object.entries(formats).map(([field, format]) => [renames[field], format])) : formats;
@@ -1039,7 +1170,7 @@ export default function App() {
         result = await api(`/datasets/${editingDataset.id}/fields`, { ...json({ name: datasetName.trim(), annotation_merge: mergeAnnotations, annotation_fields: annotationFields, version: editingDataset.version, types: overrides, display_names: renames, formats: Object.fromEntries(preview.schema.filter((field: any) => formats[field.name.trim()]).map((field: any) => [field.source || field.name, formats[field.name.trim()]])), field_order: fieldOrder, confirm_conversion: confirmConversion }), method: 'PATCH' });
       }
       else if (file) {
-        const form = new FormData(); form.append('file', file); form.append('annotation_merge', String(mergeAnnotations)); form.append('annotation_fields', JSON.stringify(annotationFields)); form.append('annotation_order', JSON.stringify([])); form.append('confirm_conversion', String(confirmConversion)); if (editingDataset) { form.append('dataset_id', editingDataset.id); form.append('version', String(editingDataset.version)); } form.append('name', confirmImport ? datasetName.trim() : file.name); if (selectedSheet) form.append('sheet', selectedSheet); form.append('preview', String(!confirmImport)); form.append('overrides', JSON.stringify(overrides)); form.append('renames', JSON.stringify(renames)); form.append('formats', JSON.stringify(formats)); form.append('encoding', encoding); form.append('delimiter', delimiter); form.append('has_header', String(hasHeader)); form.append('field_order', JSON.stringify(fieldOrder));
+        const form = new FormData(); form.append('file', file); form.append('annotation_merge', String(mergeAnnotations)); form.append('baseline', String(asBaseline)); form.append('annotation_fields', JSON.stringify(annotationFields)); form.append('annotation_order', JSON.stringify([])); form.append('confirm_conversion', String(confirmConversion)); if (editingDataset) { form.append('dataset_id', editingDataset.id); form.append('version', String(editingDataset.version)); } form.append('name', confirmImport ? datasetName.trim() : file.name); if (selectedSheet) form.append('sheet', selectedSheet); form.append('preview', String(!confirmImport)); form.append('overrides', JSON.stringify(overrides)); form.append('renames', JSON.stringify(renames)); form.append('formats', JSON.stringify(formats)); form.append('encoding', encoding); form.append('delimiter', delimiter); form.append('has_header', String(hasHeader)); form.append('field_order', JSON.stringify(fieldOrder));
         result = await api('/imports/files', { method: 'POST', body: form });
         if (result.sheets) {
           setSheets(result.sheets);
@@ -1049,7 +1180,7 @@ export default function App() {
           result = await api('/imports/files', { method: 'POST', body: form });
         }
       }
-      else result = await api('/imports/paste', json({ name: confirmImport ? datasetName.trim() : t("粘贴数据"), text: paste, annotation_merge: mergeAnnotations, annotation_fields: annotationFields, annotation_order: [], preview: !confirmImport, confirm_conversion: confirmConversion, dataset_id: editingDataset?.id, version: editingDataset?.version, overrides, renames, formats, delimiter: delimiter || undefined, has_header: hasHeader, field_order: fieldOrder }));
+      else result = await api('/imports/paste', json({ name: confirmImport ? datasetName.trim() : t("粘贴数据"), text: paste, baseline: asBaseline, annotation_merge: mergeAnnotations, annotation_fields: annotationFields, annotation_order: [], preview: !confirmImport, confirm_conversion: confirmConversion, dataset_id: editingDataset?.id, version: editingDataset?.version, overrides, renames, formats, delimiter: delimiter || undefined, has_header: hasHeader, field_order: fieldOrder }));
       if (!confirmImport) {
         setMessage(fieldChangeMessage(detectedPreview.current?.schema || editingDataset?.schema, result.schema));
         result.field_formats = Object.fromEntries(Object.entries(result.field_formats).map(([field, format]: [string, any]) => [field, editingDataset?.schema.find(original => original.name === field && original.type === result.schema.find((item: any) => item.name === field)?.type) && editingDataset.field_formats?.[field] || { ...format, rounding: defaultRounding, decimals: format.kind === 'decimal' || format.format === 'percent' ? defaultDecimals : 0 }]));
@@ -1062,16 +1193,44 @@ export default function App() {
       else {
         for (const [key, value] of dynamicCache.current.previews) if (value.preview_id === preview?.preview_id) dynamicCache.current.previews.delete(key);
         acceptDataset(result); setShowImport(false); setFile(null); setPreview(null); setEditingDataset(null); setEditingField('');
-        if (panel === 'charts') { setActiveDatasetId(asAnnotation ? activeDatasetId : result.id); setSelected(''); navigateTo(editorPath); setImportedIds(items => [...items.filter(value => value !== result.id), result.id]); setDirty(true); }
+        if (panel === 'charts') {
+          const added = !importedIds.includes(result.id);
+          setActiveDatasetId(asAnnotation ? activeDatasetId : result.id);
+          if (!editingDataset || added) setSelected('');
+          navigateTo(editorPath);
+          if (added) {
+            setImportedIds(items => items.includes(result.id) ? items : [...items, result.id]);
+            setDoc(previous => {
+              const folders = previous.datasetFolders || [];
+              const current = folders.find(folder => folder.id === activeTab.id);
+              const datasetIds = [...new Set([...(current?.datasetIds || []), result.id])];
+              return { ...previous, datasetFolders: [...folders.filter(folder => folder.id !== activeTab.id), { ...activeTab, datasetIds }] };
+            });
+          }
+          setDirty(true);
+        }
         setMessage(t('数据集已接入'));
       }
     } catch (e) {
       const issues = confirmImport ? fieldTypeIssues(e) : undefined;
       if (issues) { setPreview((previous: any) => ({ ...previous, typeIssues: issues })); reviewedImport.current = signature; setMessage(t('已标红不匹配的样例，再次保存应用展示设置，原始数据不变。')); }
-      else setMessage((e as Error).message);
+      else setMessage(t((e as Error).message));
     } finally { setBusy(false); }
   };
-  const reportTabs = <ReportTabs tabs={tabs} activeId={activeTab.id} readOnly={publishedView} onSelect={selectTab} onCreate={tabName => {
+  const baselineDatasetIds = new Set(reportDatasets.filter(source => source.baseline_values != null).map(source => source.id));
+  const usedDatasetIds = new Set(doc.charts.flatMap(({ datasetId, config }) => [
+    ...(config.type === 'title' ? [] : [datasetId]),
+    ...(config.showBaselines && baselineAxisCharts.includes(config.type) ? (config.baselineFields || []).map(field => field.datasetId).filter(id => baselineDatasetIds.has(id)) : []),
+  ]));
+  if (annotationCharts.some(chart => chart.config.showAnnotations)) {
+    for (const source of annotationSources) usedDatasetIds.add(source.id);
+  }
+  const datasetFolders: DatasetFolder[] = tabs.map(tab => ({
+    id: tab.id, name: tabTitle(tab.name),
+    datasetIds: doc.datasetFolders?.find(folder => folder.id === tab.id)?.datasetIds || [],
+  }));
+  // Charts without a tabId belong to the first tab; pin them to it before reordering so they stay where they are.
+  const reportTabs = <ReportTabs tabs={tabs} activeId={activeTab.id} readOnly={publishedView} onSelect={selectTab} onReorder={ids => change({ ...doc, tabs: ids.map(tabId => tabs.find(tab => tab.id === tabId)!), charts: doc.charts.map(chart => chart.tabId ? chart : { ...chart, tabId: tabs[0].id }) }, true)} onCreate={tabName => {
     const tab = { id: crypto.randomUUID(), name: tabName };
     change({ ...doc, tabs: [...tabs, tab] }); selectTab(tab.id);
   }} onCopy={tabId => {
@@ -1083,7 +1242,11 @@ export default function App() {
   }} onRename={(tabId, tabName) => change({ ...doc, tabs: tabs.map(tab => tab.id === tabId ? { ...tab, name: tabName } : tab) })} onDelete={tabId => {
     if (tabs.length === 1) return;
     const remaining = tabs.filter(tab => tab.id !== tabId);
-    change({ ...doc, tabs: remaining, charts: doc.charts.filter(chart => (chart.tabId || tabs[0].id) !== tabId) }, true);
+    change({
+      ...doc, tabs: remaining,
+      datasetFolders: doc.datasetFolders?.filter(folder => folder.id !== tabId),
+      charts: doc.charts.filter(chart => (chart.tabId || tabs[0].id) !== tabId),
+    }, true);
     if (activeTab.id === tabId) selectTab(remaining[remaining.length - 1].id);
   }} />;
   return <div ref={appRef} className={`app-shell ${publishedView ? 'published-view' : ''} ${publishedView ? 'canvas-display' : ''} ${commentChart ? 'comments-open' : ''} ${showSettings ? "settings-open" : showReports ? "reports-open" : panel === "history" || panel in modulePaths ? "datasets-open" : ""} ${portal ? 'portal-view' : ''}`}>
@@ -1107,44 +1270,82 @@ export default function App() {
     <section className="sidebar left-panel">
       {sidebarResizer('left')}
 
-        <div className="toolbar-controls"><button onClick={() => addChart('filter')}><Icon name="funnel" />{t("筛选器")}</button></div><div className="section-title">{t("可选图表")}</div><div className="chart-list-frame"><div tabIndex={0} aria-label={t("可选图表列表")} className={`chart-grid ${chartsScrolling ? 'is-scrolling' : ''}`} onScroll={e => { const list = e.currentTarget, height = Math.max(20, list.clientHeight * list.clientHeight / list.scrollHeight); list.parentElement!.style.setProperty('--thumb-height', height + 'px'); list.parentElement!.style.setProperty('--thumb-top', (list.scrollTop / Math.max(1, list.scrollHeight - list.clientHeight) * (list.clientHeight - height)) + 'px'); setChartsScrolling(true); window.clearTimeout(scrollTimer.current); scrollTimer.current = window.setTimeout(() => setChartsScrolling(false), 650); }}>{chartRegistry.map(chart => <button key={chart.id} onClick={() => addChart(chart.id)}><Icon name={chart.id} />{chart.label}</button>)}</div><span className="chart-scroll-thumb" aria-hidden="true" /></div>
+        <div className="toolbar-controls"><button onClick={() => addChart('filter')}><Icon name="funnel" />{t("筛选器")}</button></div><div className="section-title">{t("可选图表")}</div><div className="chart-list-frame"><div tabIndex={0} aria-label={t("可选图表列表")} className={`chart-grid ${chartsScrolling ? 'is-scrolling' : ''}`} onScroll={e => { const list = e.currentTarget, height = Math.max(20, list.clientHeight * list.clientHeight / list.scrollHeight); list.parentElement!.style.setProperty('--thumb-height', height + 'px'); list.parentElement!.style.setProperty('--thumb-top', (list.scrollTop / Math.max(1, list.scrollHeight - list.clientHeight) * (list.clientHeight - height)) + 'px'); setChartsScrolling(true); window.clearTimeout(scrollTimer.current); scrollTimer.current = window.setTimeout(() => setChartsScrolling(false), 650); }}><button onClick={() => addChart('title')}><Icon name="title" />{t('标题')}</button>{chartRegistry.map(chart => <button key={chart.id} onClick={() => addChart(chart.id)}><Icon name={chart.id} />{chart.label}</button>)}</div><span className="chart-scroll-thumb" aria-hidden="true" /></div>
     </section>
-    {panel === 'portals' || panel === 'users' || panel === 'roles' || panel === 'permissions' ? <main className="reports-page dataset-management access-page">{panel === 'portals' ? <PortalsPage onMessage={setMessage} /> : panel === 'users' ? <UsersPage onMessage={setMessage} /> : panel === 'roles' ? <RolesPage onMessage={setMessage} /> : <PermissionsPage onMessage={setMessage} openReportId={permissionReport} onOpened={() => setPermissionReport('')} />}</main> : panel === 'scheduled' ? <main className="reports-page dataset-management scheduled-page"><ScheduledQueries onMessage={setMessage} onOpenReport={reportId => void open(reportId)} /></main> : panel === 'history' ? <DatasetManager onEdit={source => void openFieldSettings(source, false, true)} onMessage={setMessage} onView={source => void openFieldSettings(source, true)} datasets={savedDatasets} onConnect={() => { setEditingDataset(null); setPreview(null); setShowImport(true); }} onDeleted={value => { setSavedDatasets(items => items.filter(item => item.id !== value)); setDatasets(items => items.filter(item => item.id !== value)); setImportedIds(items => items.filter(item => item !== value)); }} /> : <main ref={publishedWorkspace} className="workspace">{publishedView && reportTabs}{restoredDraft && <div className="draft-notice" role="status"><span>{t('\u5df2\u52a0\u8f7d\u672a\u4fdd\u5b58\u5185\u5bb9\uff0c\u786e\u8ba4\u4f7f\u7528\u540e\u8bf7\u70b9\u51fb\u4fdd\u5b58')}</span><button onClick={() => void open(id)}>{t('\u6253\u5f00\u5df2\u4fdd\u5b58\u7248\u672c')}</button></div>}<div id="report-tab-panel" role="tabpanel" aria-labelledby={publishedView && tabs.length === 1 ? undefined : 'report-tab-' + activeTab.id} aria-label={publishedView && tabs.length === 1 ? activeTab.name : undefined} ref={workspaceScroll} className="workspace-scroll" onClick={event => { if (!pasteArmed && !(event.target as Element).closest('.chart-card')) { setSelected(''); setCommentChart(''); } }}>
-      <div ref={setCanvasNode} tabIndex={0} className={`grid-surface ${resizing ? 'is-resizing' : ''} ${pasteArmed ? 'paste-armed' : ''} ${!previewMode && tile && tile.config.type !== 'filter' ? 'chart-focused' : ''}`} data-testid="grid-surface" style={{ minHeight: Math.max(displayRows, ...(insertion?.charts.map(chart => chart.y + chart.h + (previewMode ? 0 : 4)) || [])) * ROW_UNIT - ROW_GAP, ...(publishedCanvasWidth ? { maxWidth: publishedCanvasWidth, margin: '0 auto' } : {}) }} onClick={e => { if ((e.target as HTMLElement).closest('.chart-card')) return; const r = e.currentTarget.getBoundingClientRect(); const at = { x: Math.floor((e.clientX - r.left) / ((r.width + 8) / grid.columns)), y: Math.floor((e.clientY - r.top) / ROW_UNIT) }; pasteAt.current = at; e.currentTarget.focus({ preventScroll: true }); if (pasteArmed) pasteChart(at); else { setSelected(''); setCommentChart(''); } }} onPaste={e => { if (copied && !previewMode) { e.preventDefault(); pasteChart(pasteAt.current); } }} onKeyDown={e => { if (e.key === 'Escape') { setPasteArmed(false); setSelected(''); } if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && tile && !previewMode) { e.preventDefault(); copyChart(tile); } }}>
+    {panel === 'portals' || panel === 'users' || panel === 'roles' || panel === 'permissions' ? <main className="reports-page dataset-management access-page">{panel === 'portals' ? <PortalsPage onMessage={setMessage} /> : panel === 'users' ? <UsersPage onMessage={setMessage} /> : panel === 'roles' ? <RolesPage onMessage={setMessage} /> : <PermissionsPage onMessage={setMessage} openReportId={permissionReport} onOpened={() => setPermissionReport('')} />}</main> : panel === 'scheduled' ? <main className="reports-page dataset-management scheduled-page"><ScheduledQueries onMessage={setMessage} onOpenReport={reportId => void open(reportId)} /></main> : panel === 'history' ? <DatasetManager onEdit={source => void openFieldSettings(source, false, true)} onMessage={setMessage} onView={source => void openFieldSettings(source, true)} datasets={savedDatasets} onConnect={() => { setEditingDataset(null); setPreview(null); setShowImport(true); }} onDeleted={value => { setSavedDatasets(items => items.filter(item => item.id !== value)); setDatasets(items => items.filter(item => item.id !== value)); setImportedIds(items => items.filter(item => item !== value)); }} /> : <main ref={publishedWorkspace} className="workspace">{restoredDraft && <div className="draft-notice" role="status"><span>{t('\u5df2\u52a0\u8f7d\u672a\u4fdd\u5b58\u5185\u5bb9\uff0c\u786e\u8ba4\u4f7f\u7528\u540e\u8bf7\u70b9\u51fb\u4fdd\u5b58')}</span><button onClick={() => void open(id)}>{t('\u6253\u5f00\u5df2\u4fdd\u5b58\u7248\u672c')}</button></div>}<div ref={workspaceScroll} className={pasteArmed ? "workspace-scroll paste-armed" : "workspace-scroll"} onClick={clickCanvas}>{publishedView && reportTabs}<div id="report-tab-panel" role="tabpanel" aria-labelledby={publishedView && tabs.length === 1 ? undefined : 'report-tab-' + activeTab.id} aria-label={publishedView && tabs.length === 1 ? activeTab.name : undefined} className="report-tab-panel">
+      <div ref={setCanvasNode} tabIndex={0} className={`grid-surface ${resizing ? 'is-resizing' : ''} ${!previewMode && tile && tile.config.type !== 'filter' ? 'chart-focused' : ''}`} data-testid="grid-surface" style={{ minHeight: Math.max(displayRows, ...(insertion?.charts.map(chart => chart.y + chart.h + (previewMode ? 0 : 4)) || [])) * ROW_UNIT - ROW_GAP, ...(publishedCanvasWidth ? { maxWidth: publishedCanvasWidth, margin: '0 auto' } : {}) }} onPaste={e => { if (copied && !previewMode) { e.preventDefault(); pasteChart(pasteAt.current); } }} onKeyDown={e => { if (e.key === 'Escape') { setPasteArmed(false); setSelected(''); } if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && tile && !previewMode) { e.preventDefault(); copyChart(tile); } }}>
       {!tabCharts.length && <div className="empty-canvas">{t("\u5148\u63a5\u5165\u6570\u636e\uff0c\u518d\u4ece\u5de6\u4fa7\u6dfb\u52a0\u4efb\u610f\u6570\u91cf\u7684\u56fe\u8868")}</div>}
-      {!publishedView && !previewMode && doc.showGuides && <div className="grid-guides" aria-hidden="true">{(doc.guideType === 'thirds' ? [1 / 3, 2 / 3] : [1 / 4, 1 / 2, 3 / 4]).map(part => <span key={part} style={{ left: `calc((100% + 8px) * ${part} - 4px)` }} />)}</div>}
+      {!publishedView && !previewMode && doc.showGuides && <div className="grid-guides" aria-hidden="true">{widths.slice(0, -1).map((column, index) => <span key={index} style={{ left: `calc((100% + 8px) * ${column / grid.columns} - 4px)` }} />)}</div>}
       {/* Drag slot sits beneath the cards: the origin while dragging, or the 1/2 · 1/3 · 1/4 slot of a sideways drop. */}
       {draggingId && (() => { const origin = tabCharts.find(chart => chart.id === draggingId), joined = sidewaysInsertion?.charts.find(chart => chart.id === sidewaysInsertion.movingId), slot = joined && sidewaysRow !== undefined && sidewaysRow !== null ? { ...joined, y: sidewaysRow } : undefined; if (!origin) return null; const at = gridPixels(origin), to = slot && gridPixels(slot); return <div className="insertion-preview insertion-under" aria-hidden="true"><div className="drag-slot drag-origin" style={{ left: at.left, top: at.top, width: at.width, height: at.height }} />{to && <div className="drag-slot" style={{ left: to.left, top: to.top, width: to.width, height: to.height }}><span>{t('松开以插入')}</span></div>}</div>; })()}
       {surfaceWidth > 0 && keptTabs.map(tabId => { const active = tabId === activeTab.id, tabItems = chartsOfTab(tabId), shown = active ? displayCharts : displayFor(tabItems); return <div key={tabId} className="tab-canvas" style={active ? undefined : { display: 'none' }}>
-      <GridLayout width={surfaceWidth} className="canvas multi-canvas" cols={displayColumns} rowHeight={ROW_HEIGHT} margin={[8, ROW_GAP]} containerPadding={[0, 0]} compactType={null} preventCollision={false} allowOverlap={true} style={active ? { minHeight: Math.max(displayRows * ROW_UNIT - ROW_GAP, publishedView ? 0 : Math.max(0, ...displayCharts.map(chart => chart.y + chart.h)) * ROW_UNIT - ROW_GAP + 100) } : undefined} draggableHandle=".tile-drag-handle" draggableCancel=".tile-actions,button:not(.tile-drag-handle)" isDraggable={active && !previewMode && !publishedView} isResizable={active && !previewMode && !publishedView} resizeHandles={['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']} layout={shown.map(c => ({ i: c.id, x: c.x, y: c.y, w: c.w, h: c.h, minW: minCols(c, displayColumns), minH: c.config.type === 'filter' ? MIN_FILTER_ROWS : MIN_CHART_ROWS, layoutRevision } as Layout))} onResizeStart={() => setResizing(true)} onResize={(_layout, old, item) => snapWidth(item, old)} onDragStart={(_layout, _old, _item, _placeholder, event, node) => { const rect = node.getBoundingClientRect(); const touch = event as MouseEvent & { touches?: TouchList }; const point = touch.touches?.[0] || event; dragAnchor.current = { x: point.clientX - rect.left, y: point.clientY - rect.top }; insertionRef.current = null; setInsertion(null); setDraggingId(_item.i); }} onDrag={(_layout, _old, item, _placeholder, event) => { previewInsertion(item.i, event); }} onDragStop={(layout, _old, item, _placeholder, event) => { const next = previewInsertion(item.i, event); insertionRef.current = null; setInsertion(null); setDraggingId(''); if (next) change({ ...doc, charts: next.charts.map(chart => { const original = tabCharts.find(item => item.id === chart.id)!; return chart.config.type === 'filter' && (chart.w !== original.w || chart.h !== original.h) ? { ...chart, config: { ...chart.config, filterAutoWidth: false } } : chart; }) }); void layout; setLayoutRevision(value => value + 1); }} onResizeStop={(_layout, _old, item) => {
-        setResizing(false); snapWidth(item, _old);
+      <GridLayout width={surfaceWidth} className="canvas multi-canvas" cols={displayColumns} rowHeight={ROW_HEIGHT} margin={[8, ROW_GAP]} containerPadding={[0, 0]} compactType={null} preventCollision={false} allowOverlap={true} style={active ? { minHeight: Math.max(displayRows * ROW_UNIT - ROW_GAP, publishedView ? 0 : Math.max(0, ...displayCharts.map(chart => chart.y + chart.h)) * ROW_UNIT - ROW_GAP + 100) } : undefined} draggableHandle=".tile-drag-handle" draggableCancel=".tile-actions,button:not(.tile-drag-handle)" isDraggable={active && !previewMode && !publishedView} isResizable={active && !previewMode && !publishedView} resizeHandles={['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']} layout={shown.map(c => ({ i: c.id, x: c.x, y: c.y, w: c.w, h: c.h, minW: minCols(c, displayColumns), minH: c.config.type === 'title' ? titleRows : c.config.type === 'filter' ? MIN_FILTER_ROWS : MIN_CHART_ROWS, layoutRevision } as Layout))} onResizeStart={() => { setResizeShifts([]); setResizing(true); }} onResize={(_layout, old, item, placeholder) => { setResizeShifts(snapResize(item, old)); if (placeholder) Object.assign(placeholder, { x: item.x, w: item.w }); }} onDragStart={(_layout, _old, _item, _placeholder, event, node) => { const rect = node.getBoundingClientRect(); const touch = event as MouseEvent & { touches?: TouchList }; const point = touch.touches?.[0] || event; dragAnchor.current = { x: point.clientX - rect.left, y: point.clientY - rect.top }; insertionRef.current = null; setInsertion(null); setDraggingId(_item.i); }} onDrag={(_layout, _old, item, _placeholder, event) => { previewInsertion(item.i, event); }} onDragStop={(layout, _old, item, _placeholder, event) => { const next = previewInsertion(item.i, event); insertionRef.current = null; setInsertion(null); setDraggingId(''); if (next) change({ ...doc, charts: next.charts.map(chart => { const original = tabCharts.find(item => item.id === chart.id)!; return chart.config.type === 'filter' && (chart.w !== original.w || chart.h !== original.h) ? { ...chart, config: { ...chart.config, filterAutoWidth: false } } : chart; }) }); void layout; setLayoutRevision(value => value + 1); }} onResizeStop={(_layout, _old, item) => {
+        setResizing(false);
+        setResizeShifts([]);
+        const shifts = snapResize(item, _old);
         setLayoutRevision(value => value + 1);
         const chart = tabCharts.find(chart => chart.id === item.i);
-        if (chart) change({ ...doc, charts: pushGridTiles(tabCharts, [{ ...chart, x: item.x, y: item.y, w: item.w, h: item.h, config: { ...chart.config, ...(chart.config.type === 'filter' ? { filterAutoWidth: false } : {}) } }]) });
+        if (chart && (chart.x !== item.x || chart.y !== item.y || chart.w !== item.w || chart.h !== item.h)) change({ ...doc, charts: pushGridTiles(tabCharts, [{ ...chart, x: item.x, y: item.y, w: item.w, h: item.h, config: { ...chart.config, ...(chart.config.type === 'filter' ? { filterAutoWidth: false } : {}) } }, ...shifts]) });
       }}>
-        {shown.map(c => <article key={c.id} id={'chart-' + c.id} data-testid="chart-tile" style={previewShift(c)} className={`chart-card ${previewShift(c) ? 'preview-shift' : ''} ${c.config.type === 'kpi' ? 'kpi-card' : ''} ${c.config.type === 'filter' ? 'filter-card' : ''} ${c.config.type !== 'filter' && c.config.description?.trim() ? 'chart-with-note' : ''} ${!publishedView && selected === c.id ? 'active-card' : ''}`} onPointerDownCapture={() => { if (publishedView) return; setSelected(c.id); setActiveDatasetId(c.datasetId); }} onClick={() => { if (publishedView) return; setCommentChart(''); setSelected(c.id); setActiveDatasetId(c.datasetId); }}><div className="card-head">{/* Filter titles only link filters to charts (properties sidebar); they are never shown on the canvas. */}<strong title={c.config.type === 'filter' ? undefined : chartTitle(titleConfig(c.config, doc), datasets.find(dataset => dataset.id === c.datasetId), chartFilters(c, tabItems), publishedView ? publishedTheme.locale || getChartLocale() : getChartLocale())}>{c.config.type === 'filter' ? '' : chartTitle(titleConfig(c.config, doc), datasets.find(dataset => dataset.id === c.datasetId), chartFilters(c, tabItems), publishedView ? publishedTheme.locale || getChartLocale() : getChartLocale())}</strong>{!previewMode && <button className="tile-drag-handle" aria-label={t('\u62d6\u52a8\u7ec4\u4ef6')} title={t('\u6309\u4f4f\u62d6\u52a8\u7ec4\u4ef6')}>&#8943;</button>}<div className="tile-actions">{!offlineExport && c.config.type !== 'filter' && <button className="comment-button" aria-label={t('\u8bc4\u8bba') + ' ' + (commentCounts[c.id] || 0)} onClick={event => { event.stopPropagation(); setSelected(c.id); setCommentChart(c.id); }}><Icon name="comment" /><span>{commentCounts[c.id] || 0}</span></button>}{!previewMode && <button title={t("\u590d\u5236\u56fe\u8868")} aria-label={t("\u590d\u5236\u56fe\u8868")} onClick={e => { e.stopPropagation(); copyChart(c); }}><Icon name="copy" /></button>}{c.config.type !== 'filter' && <button title={t("\u590d\u5236\u4e3a\u56fe\u7247")} aria-label={t("\u590d\u5236\u4e3a\u56fe\u7247")} onClick={e => { e.stopPropagation(); void copyChartImage(c); }}><Icon name="image" /></button>}{!previewMode && <button className="remove-dataset remove-component" aria-label={t("\u5220\u9664\u56fe\u8868")} onClick={e => { e.stopPropagation(); deleteChart(c); }}><Icon name="remove" /></button>}</div></div>{c.config.type === 'filter' ? <FilterControl displayLocale={publishedView ? publishedTheme.locale : undefined} tile={c} onContentWidth={width => fitFilterWidth(c.id, width)} dataset={datasets.find(d => d.id === c.datasetId)} global={[]} onChange={(config, automatic) => { if (automatic) { setDoc(previous => ({ ...previous, charts: previous.charts.map(item => item.id === c.id ? { ...item, config: { ...item.config, ...config } } : item) })); if (!publishedView) setDirty(true); } else change({ ...doc, charts: tabCharts.map(item => item.id === c.id ? { ...item, config: { ...item.config, ...config } } : item) }); }} /> : <ChartTile annotations={annotations} highlightWeekends={doc.highlightWeekends} titleNoDimension={doc.titleNoDimension} published={publishedView} theme={publishedView ? publishedTheme : theme} showUpdatedAt={showUpdatedAt} tile={c} dataset={datasets.find(d => d.id === c.datasetId)} global={chartFilters(c, tabItems)} />}{c.config.type !== 'filter' && c.config.description?.trim() && <aside className="chart-note" role="note" aria-label={translate(publishedView ? publishedTheme.locale || getChartLocale() : getChartLocale(), '图表说明')}>{c.config.description}</aside>}</article>)}
+        {shown.map(c => {
+          const locale = publishedView ? publishedTheme.locale || getChartLocale() : getChartLocale();
+          const title = c.config.type === 'filter' ? '' : c.config.type === 'title'
+            ? c.config.title ?? translate(locale, '标题')
+            : chartTitle(c.config, datasets.find(source => source.id === c.datasetId), chartFilters(c, tabItems), locale);
+          const description = c.config.type === 'filter' ? '' : c.config.description?.trim();
+          return <article key={c.id} id={'chart-' + c.id} data-testid="chart-tile" style={previewShift(c)} className={`chart-card ${previewShift(c) ? 'preview-shift' : ''} ${c.config.type === 'kpi' ? 'kpi-card' : c.config.type === 'title' ? 'title-card' : ''} ${c.config.type === 'filter' ? 'filter-card' : ''} ${!publishedView && selected === c.id ? 'active-card' : ''}`} onPointerDownCapture={() => { if (publishedView) return; setSelected(c.id); if (c.config.type !== 'title') setActiveDatasetId(c.datasetId); }} onClick={() => { if (publishedView) return; setCommentChart(''); setSelected(c.id); if (c.config.type !== 'title') setActiveDatasetId(c.datasetId); }}><div className="card-head">
+          <span className="chart-heading">
+            <strong title={title || undefined} style={c.config.type === 'title' ? { fontSize: titleFontSize(c.config) } : undefined}>{title}</strong>
+            {description && <ChartDescription text={description} label={translate(locale, '图表说明')} />}
+          </span>{!previewMode && <button className="tile-drag-handle" aria-label={t('\u62d6\u52a8\u7ec4\u4ef6')} title={t('\u6309\u4f4f\u62d6\u52a8\u7ec4\u4ef6')}>&#8943;</button>}<div className="tile-actions">{!offlineExport && c.config.type !== 'filter' && c.config.type !== 'title' && <button className="comment-button" aria-expanded={commentChart === c.id} aria-label={t('\u8bc4\u8bba') + ' ' + (commentCounts[c.id] || 0)} onClick={event => { event.stopPropagation(); setSelected(c.id); setCommentChart(current => current === c.id ? '' : c.id); }}><Icon name="comment" /></button>}{!previewMode && <button title={t("\u590d\u5236\u56fe\u8868")} aria-label={t("\u590d\u5236\u56fe\u8868")} onClick={e => { e.stopPropagation(); copyChart(c); }}><Icon name="copy" /></button>}{c.config.type !== 'filter' && c.config.type !== 'title' && <button title={t("\u590d\u5236\u4e3a\u56fe\u7247")} aria-label={t("\u590d\u5236\u4e3a\u56fe\u7247")} onClick={e => { e.stopPropagation(); void copyChartImage(c); }}><Icon name="image" /></button>}{!previewMode && <button className="remove-dataset remove-component" aria-label={t("\u5220\u9664\u56fe\u8868")} onClick={e => { e.stopPropagation(); deleteChart(c); }}><Icon name="remove" /></button>}</div></div>{c.config.type === 'filter' ? <FilterControl displayLocale={publishedView ? publishedTheme.locale : undefined} tile={c} onContentWidth={width => fitFilterWidth(c.id, width)} dataset={datasets.find(d => d.id === c.datasetId)} global={[]} onChange={(config, automatic) => { if (automatic) { setDoc(previous => ({ ...previous, charts: previous.charts.map(item => item.id === c.id ? { ...item, config: { ...item.config, ...config } } : item) })); if (!publishedView) setDirty(true); } else change({ ...doc, charts: tabCharts.map(item => item.id === c.id ? { ...item, config: { ...item.config, ...config } } : item) }); }} /> : c.config.type !== 'title' && <ChartTile baselines={c.config.showBaselines ? baselineOptions.filter(option => c.config.baselineFields?.some(field => field.datasetId === option.datasetId && field.field === option.field && (field.row ?? 0) === option.row)) : undefined} annotations={annotations} highlightWeekends={doc.highlightWeekends} published={publishedView} theme={publishedView ? publishedTheme : theme} showUpdatedAt={showUpdatedAt} tile={c} dataset={datasets.find(d => d.id === c.datasetId)} global={chartFilters(c, tabItems)} />}</article>; })}
       </GridLayout></div>; })}
       {insertion && (insertion.side === 'top' || insertion.side === 'bottom') && <div className="insertion-preview" aria-hidden="true">{(() => { const target = tabCharts.find(chart => chart.id === insertion.targetId); if (!target) return null; const row = insertion.side === 'top' ? target.y : Math.max(...tabCharts.filter(chart => chart.id !== insertion.movingId && chart.y === target.y).map(chart => chart.y + chart.h)); return <div className="insertion-line" style={{ top: Math.max(0, row * ROW_UNIT - ROW_GAP / 2 - 1) }}><span>{t('松开以插入')}</span></div>; })()}</div>}
-      </div></div><footer className="workspace-status"><div className="canvas-toolbar bottom-toolbar"><button title={t("撤销")} aria-label={t("撤销")} disabled={!history.current.length} onClick={() => { setDeleted(null); future.current.push(doc); setDoc(history.current.pop()!); setDirty(true); }}><Icon name="undo" /></button><button title={t("重做")} aria-label={t("重做")} disabled={!future.current.length} onClick={() => { setDeleted(null); history.current.push(doc); setDoc(future.current.pop()!); setDirty(true); }}><Icon name="redo" /></button></div><div className="footer-data-controls"><button className="import-button square-add-button" title={t("接入数据")} aria-label={t("接入数据")} disabled={busy} onClick={() => { setEditingDataset(null); setEditingSource(false); setEditingField(''); setPreview(null); setShowImport(true); }}><Icon name="add" /></button><div className="working-dataset"><details className="dataset-picker" ref={datasetPicker} onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}><summary aria-label={t('\u9009\u62e9\u6570\u636e\u96c6')} aria-disabled={!importedIds.length} tabIndex={importedIds.length ? 0 : -1} onClick={event => { if (!importedIds.length) event.preventDefault(); }} title={datasetDisplayName(dataset)}>{dataset && <DatasetTag dynamic={dataset.dynamic} />}<span>{datasetDisplayName(dataset) || t('\u6682\u65e0\u6570\u636e\u96c6')}</span><img src="/import-icons/chevron-down.svg" alt="" /></summary><div className="dataset-options">{importedIds.map(value => <button key={value} aria-pressed={value === dataset?.id} title={datasetDisplayName(datasets.find(item => item.id === value))} onClick={() => { selectDataset(value); if (datasetPicker.current) datasetPicker.current.open = false; }}><DatasetTag dynamic={datasets.find(item => item.id === value)?.dynamic} /><span className="dataset-option-name">{datasetDisplayName(datasets.find(item => item.id === value)) || value}</span></button>)}</div></details><button className="dataset-configure" title={t('\u5b57\u6bb5\u914d\u7f6e')} aria-label={t('\u5b57\u6bb5\u914d\u7f6e')} disabled={busy} onClick={() => void openFieldSettings()}><Icon name="settings" /></button><button className="remove-dataset" disabled={busy || !dataset} title={t('\u79fb\u9664\u5f53\u524d\u6570\u636e\u96c6')} aria-label={t('\u79fb\u9664\u5f53\u524d\u6570\u636e\u96c6')} onClick={() => { if (!dataset) return; const removed = dataset.id, remaining = importedIds.filter(value => value !== removed); setImportedIds(remaining); setDatasets(items => items.filter(item => item.id !== removed)); change({ ...doc, datasets: doc.datasets.filter(item => item.id !== removed), charts: doc.charts.map(chart => chart.datasetId === removed ? { ...chart, datasetId: '' } : chart) }, true); setActiveDatasetId(remaining[remaining.length - 1] || ''); setSelected(''); }}><Icon name="close" /></button></div></div>{!publishedView && reportTabs}<div className="report-editor-actions">{saveError && <span role="alert">{t("保存失败")}<button onClick={() => setSaveError('')}>{t("重试")}</button></span>}<button disabled={reportBusy || publishing || isSaving || !name.trim()} onClick={() => void exportReport()}><Icon name="download" />{t('导出')}</button><div className="publish-menu"><button className="primary" aria-haspopup="menu" disabled={publishing || isSaving || !name.trim()} onClick={() => void publish()}>{publishing ? t('\u53d1\u5e03\u4e2d\u2026') : t('\u53d1\u5e03')}</button><div className="publish-menu-options" role="menu" aria-label={t('\u53d1\u5e03\u9009\u9879')}><div><button role="menuitem" disabled={publishing || !tabCharts.length} title={t('\u5bfc\u51fa\u4e3a\u53ef\u4ea4\u4e92\u7684 HTML \u6587\u4ef6\uff08\u542b\u5168\u90e8\u6807\u7b7e\u9875\u548c\u6570\u636e\uff09')} onClick={() => void exportPage()}>{t('\u53d1\u5e03\u4e3a\u9875\u9762')}</button></div></div></div><button className="primary save-dashboard" disabled={isSaving || !dirty || !name.trim()} onClick={() => void save()}>{isSaving ? t("保存中…") : t("保存")}</button></div></footer></main>}
-    <aside className="sidebar properties">{sidebarResizer('right')}<div className="property-body" key={commentChart || tile?.id || 'report'}>{!commentChart && !tile && <fieldset className="axis-settings"><legend>{t('\u6574\u4f53\u8bbe\u7f6e')}</legend><label>{t('\u62a5\u8868\u6807\u9898')}<input className="report-name" aria-label={t("仪表板名称")} value={name} onChange={e => { setName(e.target.value); setDirty(true); }} /></label><label><input type="checkbox" checked={!!doc.highlightWeekends} onChange={event => change({ ...doc, highlightWeekends: event.target.checked })} />{t('\u9ad8\u4eae\u663e\u793a\u5468\u672b')}</label><label><input type="checkbox" checked={!!doc.titleNoDimension} onChange={event => change({ ...doc, titleNoDimension: event.target.checked })} />{t('标题不引用维度')}</label><label><input type="checkbox" checked={!!doc.showGuides} onChange={event => change({ ...doc, showGuides: event.target.checked })} />{t('显示参考线')}</label><label>{t('参考线类型')}<select aria-label={t('参考线类型')} disabled={!doc.showGuides} value={doc.guideType || 'quarters'} onChange={event => change({ ...doc, guideType: event.target.value as Document['guideType'] })}><option value="quarters">{t('4 分线（1/4、1/2、3/4）')}</option><option value="thirds">{t('3 分线（1/3、2/3）')}</option></select></label><label><input type="checkbox" checked={annotationCharts.length > 0 && annotationCharts.every(chart => chart.config.showAnnotations)} onChange={event => change({ ...doc, charts: doc.charts.map(chart => ({ ...chart, config: { ...chart.config, showAnnotations: event.target.checked && annotationCharts.some(item => item.id === chart.id) } })) })} />{t('显示标注')}</label></fieldset>}{!commentChart && !tile && !publishedView && (() => {
-      // Batch edits apply to every chart on the current tab (filters excluded); the selects reset after applying.
-      const charts = tabCharts.filter(chart => chart.config.type !== 'filter'), legendTypes = ['bar', 'line', 'area', 'mixed', 'scatter'];
+      </div></div></div><footer className="workspace-status"><div className="canvas-toolbar bottom-toolbar"><button title={t("撤销")} aria-label={t("撤销")} disabled={!history.current.length} onClick={() => restoreEdit(history.current, future.current)}><Icon name="undo" /></button><button title={t("重做")} aria-label={t("重做")} disabled={!future.current.length} onClick={() => restoreEdit(future.current, history.current)}><Icon name="redo" /></button></div><div className="footer-data-controls"><button className="import-button square-add-button" title={t("接入数据")} aria-label={t("接入数据")} disabled={busy} onClick={() => { setEditingDataset(null); setEditingSource(false); setEditingField(''); setPreview(null); setShowImport(true); }}><Icon name="add" /></button><div className="working-dataset"><details className="dataset-picker" ref={datasetPicker} onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}><summary aria-label={t('\u9009\u62e9\u6570\u636e\u96c6')} title={datasetDisplayName(dataset)}>{dataset && <DatasetTag dynamic={dataset.dynamic} baseline={!!dataset.baseline_values} annotation={!!Object.keys(dataset.annotation_fields || {}).length} />}<span>{datasetDisplayName(dataset) || t('\u6682\u65e0\u6570\u636e\u96c6')}</span><img src="/import-icons/chevron-down.svg" alt="" /></summary><DatasetFolderMenu key={JSON.stringify([id, activeTab.id])} activeTabId={activeTab.id} entries={reportDatasets.map(source => ({
+          id: source.id, name: datasetDisplayName(source), unused: !usedDatasetIds.has(source.id),
+          tag: <DatasetTag dynamic={source.dynamic} baseline={!!source.baseline_values} annotation={!!Object.keys(source.annotation_fields || {}).length} />,
+        }))} folders={datasetFolders} activeId={dataset?.id} onChange={folders => change({ ...doc, datasetFolders: folders }, true)} onReorder={moveDataset}
+          onSelect={value => { selectDataset(value); if (datasetPicker.current) { datasetPicker.current.open = false; datasetPicker.current.querySelector('summary')?.focus(); } }} /></details><button className="dataset-configure" title={t('\u5b57\u6bb5\u914d\u7f6e')} aria-label={t('\u5b57\u6bb5\u914d\u7f6e')} disabled={busy} onClick={() => void openFieldSettings()}><Icon name="settings" /></button><button className="remove-dataset" disabled={busy || !dataset} title={t('\u79fb\u9664\u5f53\u524d\u6570\u636e\u96c6')} aria-label={t('\u79fb\u9664\u5f53\u524d\u6570\u636e\u96c6')} onClick={() => { if (dataset) removeDataset(dataset.id); }}><Icon name="close" /></button></div></div>{!publishedView && reportTabs}<div className="report-editor-actions">{saveError && <span role="alert">{t("保存失败")}<button onClick={() => setSaveError('')}>{t("重试")}</button></span>}<div className="publish-menu"><button className="primary" aria-haspopup="menu" disabled={publishing || isSaving || !name.trim()} onClick={() => void publish()}>{publishing ? t('\u53d1\u5e03\u4e2d\u2026') : t('\u53d1\u5e03')}</button><div className="publish-menu-options" role="menu" aria-label={t('\u53d1\u5e03\u9009\u9879')}><div><button role="menuitem" disabled={publishing || !tabCharts.length} title={t('\u5bfc\u51fa\u4e3a\u53ef\u4ea4\u4e92\u7684 HTML \u6587\u4ef6\uff08\u542b\u5168\u90e8\u6807\u7b7e\u9875\u548c\u6570\u636e\uff09')} onClick={() => void exportPage()}>{t('\u53d1\u5e03\u4e3a\u9875\u9762')}</button></div></div></div><button className="primary save-dashboard" disabled={isSaving || !dirty || !name.trim()} onClick={() => void save()}>{isSaving ? t("保存中…") : t("保存")}</button></div></footer></main>}
+    <aside className="sidebar properties">{sidebarResizer('right')}<div className="property-body" key={commentChart || tile?.id || 'report'}>{!commentChart && !tile && <fieldset className="axis-settings"><legend>{t('\u6574\u4f53\u8bbe\u7f6e')}</legend><label>{t('\u62a5\u8868\u6807\u9898')}<input className="report-name" aria-label={t("仪表板名称")} value={name} onChange={e => { setName(e.target.value); setDirty(true); }} /></label><label><input type="checkbox" checked={!!doc.highlightWeekends} onChange={event => change({ ...doc, highlightWeekends: event.target.checked })} />{t('\u9ad8\u4eae\u663e\u793a\u5468\u672b')}</label><label><input type="checkbox" checked={!!doc.showGuides} onChange={event => change({ ...doc, showGuides: event.target.checked })} />{t('显示参考线')}</label><label>{t('参考线类型')}<select aria-label={t('参考线类型')} disabled={!doc.showGuides} value={doc.guideType || 'quarters'} onChange={event => change({ ...doc, guideType: event.target.value as Document['guideType'] })}><option value="thirds">{t('3 分线（1/3、2/3）')}</option><option value="quarters">{t('4 分线（1/4、1/2、3/4）')}</option><option value="sixths">{t('6 分线')}</option><option value="twelfths">{t('12 分线')}</option></select></label><label><input type="checkbox" checked={annotationCharts.length > 0 && annotationCharts.every(chart => chart.config.showAnnotations)} onChange={event => change({ ...doc, charts: doc.charts.map(chart => ({ ...chart, config: { ...chart.config, showAnnotations: event.target.checked && annotationCharts.some(item => item.id === chart.id) } })) }, true)} />{t('显示标注')}</label><label>{t('标注样式')}<select aria-label={t('标注样式')} disabled={!annotationCharts.some(chart => chart.config.showAnnotations)} value={new Set(annotationCharts.map(chart => chart.config.annotationStyle || 'range')).size === 1 ? annotationCharts[0].config.annotationStyle || 'range' : ''} onChange={event => { const style = event.target.value as ChartConfig['annotationStyle']; if (style) change({ ...doc, charts: doc.charts.map(chart => annotationCharts.some(item => item.id === chart.id) ? { ...chart, config: { ...chart.config, annotationStyle: style } } : chart) }, true); }}>{new Set(annotationCharts.map(chart => chart.config.annotationStyle || 'range')).size !== 1 && <option value="">{t('混合')}</option>}<option value="start">{t('开始日期竖线')}</option><option value="range">{t('日期区间')}</option></select></label></fieldset>}{!commentChart && !tile && !publishedView && (() => {
+      // Batch edits apply to charts on the current tab; the selects reset after applying.
+      const charts = tabCharts.filter(chart => chart.config.type !== 'filter' && chart.config.type !== 'title'), legendTypes = ['bar', 'line', 'area', 'mixed', 'scatter'];
       const sourceOf = (chart: Tile) => datasets.find(item => item.id === chart.datasetId);
       const legendFields = [...new Map(charts.flatMap(chart => (sourceOf(chart)?.schema || []).filter(field => ['string', 'date'].includes(field.type)).map(field => [field.name, field.display_name || field.name] as const))).entries()];
-      const batch = (update: (chart: Tile) => Partial<ChartConfig> | null) => change({ ...doc, charts: tabCharts.map(chart => { const next = chart.config.type === 'filter' ? null : update(chart); return next ? { ...chart, config: { ...chart.config, ...next, autoTitle: true } } : chart; }) });
+      const batch = (update: (chart: Tile) => Partial<ChartConfig> | null) => change({ ...doc, charts: tabCharts.map(chart => { const next = chart.config.type === 'filter' || chart.config.type === 'title' ? null : update(chart); return next ? { ...chart, config: { ...chart.config, ...next, autoTitle: true } } : chart; }) });
       return <fieldset className="axis-settings"><legend>{t('批量设置')}</legend>
         <label>{t('图表类型')}<select aria-label={t('批量设置图表类型')} value="" disabled={!charts.length} onChange={event => { const type = event.target.value as ChartType; if (type) batch(() => ({ type })); }}><option value="">{t('选择后应用到本页全部图表')}</option>{chartRegistry.filter(chart => chart.id !== 'filter').map(chart => <option key={chart.id} value={chart.id}>{chart.label}</option>)}</select></label>
         <label>{t('Legend / 系列分组')}<select aria-label={t('批量设置 Legend 分组')} value="" disabled={!charts.length} onChange={event => { const value = event.target.value; if (!value) return; const field = value === '__none__' ? '' : value; batch(chart => legendTypes.includes(chart.config.type) && (!field || sourceOf(chart)?.schema.some(item => item.name === field)) ? { legendField: field } : null); }}><option value="">{t('选择后应用到本页全部图表')}</option><option value="__none__">{t('不按字段分组')}</option>{legendFields.map(([field, label]) => <option key={field} value={field}>{label}</option>)}</select></label>
         <p className="filter-hint">{t('Legend 分组只应用到支持分组且数据集含该字段的图表。')}</p>
       </fieldset>;
-    })()}{!commentChart && !tile && <fieldset className="axis-settings report-refresh-settings"><legend>{t('每日定时查询')}</legend><label><input type="checkbox" checked={reportSchedule.enabled} onChange={event => change({ ...doc, refreshSchedule: { ...reportSchedule, enabled: event.target.checked } })} />{t('自动刷新报表数据集')}</label><label>{t('执行时间')}<TimePicker label={t('执行时间')} value={reportSchedule.time} disabled={!reportSchedule.enabled} onChange={time => change({ ...doc, refreshSchedule: { ...reportSchedule, time } })} /></label>{reportSchedule.timezone === 'UTC' && <small>{t('本地执行时间：{0}', new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(new Date().toISOString().slice(0, 10) + 'T' + reportSchedule.time + ':00Z')))}</small>}<TimezoneSelect disabled={!reportSchedule.enabled} value={reportSchedule.timezone} onChange={timezone => change({ ...doc, refreshSchedule: { ...reportSchedule, timezone } })} /><button disabled={refreshingReport || !datasets.some(source => importedIds.includes(source.id) && source.dynamic)} onClick={async () => { setRefreshingReport(true); try { for (const source of datasets.filter(source => importedIds.includes(source.id) && source.dynamic)) { try { const result = await api(`/datasets/${source.id}/refresh?force=true`, json({})); acceptDataset(result); } catch (error) { setMessage((error as Error).message); } } } finally { setRefreshingReport(false); } }}>{t(refreshingReport ? '执行中…' : '执行')}</button><div className="report-refresh-results">{datasets.filter(source => importedIds.includes(source.id) && source.dynamic).slice(resultPage * 10, (resultPage + 1) * 10).map(source => <div key={source.id}><strong>{source.name}</strong><span>{t('上次执行')} · {formatUpdatedAt(source.dynamic?.last_run_at)}</span><span>{t('结果更新时间')} · {formatUpdatedAt(source.data_as_of)}</span><span>{source.dynamic?.refreshing ? t('执行中…') : executionError(source.dynamic?.last_error) || t('缓存结果：{0} 行', source.row_count)}</span><button disabled={refreshingReport} onClick={() => setQueryResults(source)}>{t('查看结果')}</button></div>)}</div><Pagination page={resultPage} total={datasets.filter(source => importedIds.includes(source.id) && source.dynamic).length} onChange={setResultPage} disabled={refreshingReport} /></fieldset>}{commentChart ? <CommentsPanel key={commentChart} reportId={id} chartId={commentChart} onClose={() => setCommentChart('')} onCount={count => setCommentCounts(previous => ({ ...previous, [commentChart]: count }))} /> : tile?.config.type === 'filter' ? <><h3>{t("筛选器配置")}</h3><FilterProperties config={tile.config} dataset={dataset} onChange={patchConfig} /><fieldset className="axis-settings filter-targets"><legend>{t('关联图表')}</legend><div className="filter-target-tree"><strong title={activeTab.name}>{activeTab.name}</strong>{tabCharts.some(chart => chart.config.type !== 'filter') ? <ul><li>{(() => { const targets = tabCharts.filter(chart => chart.config.type !== 'filter'), followed = (chart: Tile) => chart.followFilterIds ?? followedFilterIds(chart, tabCharts, datasets.find(item => item.id === chart.datasetId)); return <label><input type="checkbox" checked={targets.every(chart => followed(chart).includes(tile.id))} onChange={event => change({ ...doc, charts: tabCharts.map(chart => chart.config.type === 'filter' ? chart : { ...chart, followFilterIds: event.target.checked ? [...new Set([...followed(chart), tile.id])] : followed(chart).filter(value => value !== tile.id) }) })} /><span>{t('全部图表')}</span></label>; })()}</li>{tabCharts.filter(chart => chart.config.type !== 'filter').sort((a, b) => a.y - b.y || a.x - b.x).map(chart => { const source = datasets.find(item => item.id === chart.datasetId), followed = chart.followFilterIds ?? followedFilterIds(chart, tabCharts, source); return <li key={chart.id}><label><input type="checkbox" checked={followed.includes(tile.id)} onChange={event => setChartFilters(chart, event.target.checked ? [...followed, tile.id] : followed.filter(value => value !== tile.id))} /><span title={chartTitle(titleConfig(chart.config, doc), source)}>{chartTitle(titleConfig(chart.config, doc), source) || t('未命名图表')}</span></label>{!filterMatchesChart(chart, tile, source) && <small>{t('（图表数据集没有该筛选字段，暂不生效）')}</small>}</li>; })}</ul> : <small>{t('当前页面没有图表')}</small>}</div></fieldset></> : tile ? <><h3>{t("图表配置")}</h3><label>{t('已关联数据集')}<select value={tile.datasetId} onChange={event => selectDataset(event.target.value)}>{datasets.filter(source => importedIds.includes(source.id) && !Object.keys(source.annotation_fields || {}).length).map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label><label>{t("图表标题")}<input aria-label={t("图表标题")} value={chartTitle(titleConfig(tile.config, doc), dataset)} onChange={e => patchConfig({ title: e.target.value, autoTitle: false })} /></label><label><input type="checkbox" checked={tile.config.titleNoDimension ?? !!doc.titleNoDimension} onChange={event => patchConfig({ titleNoDimension: event.target.checked })} />{t('标题不引用维度')}</label><label>{t('说明信息')}<textarea aria-label={t('说明信息')} rows={3} value={tile.config.description || ''} placeholder={t('填写后显示在图表底部')} onChange={event => patchConfig({ description: event.target.value })} /></label><fieldset className="axis-settings chart-type-settings"><legend>{t("图表类型")}</legend><select aria-label={t('图表类型')} value={tile.config.type} onChange={event => patchConfig({ type: event.target.value as ChartConfig['type'] })}>{chartRegistry.map(chart => <option key={chart.id} value={chart.id}>{chart.label}</option>)}</select></fieldset><fieldset className="axis-settings"><legend>{t('跟随筛选器')}</legend>
+    })()}{!commentChart && !tile && <fieldset className="axis-settings report-refresh-settings"><legend>{t('每日定时查询')}</legend><label><input type="checkbox" checked={reportSchedule.enabled} onChange={event => change({ ...doc, refreshSchedule: { ...reportSchedule, enabled: event.target.checked } })} />{t('自动刷新报表数据集')}</label><label>{t('执行时间')}<TimePicker label={t('执行时间')} value={reportSchedule.time} disabled={!reportSchedule.enabled} onChange={time => change({ ...doc, refreshSchedule: { ...reportSchedule, time } })} /></label>{reportSchedule.timezone === 'UTC' && <small>{t('本地执行时间：{0}', new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(new Date().toISOString().slice(0, 10) + 'T' + reportSchedule.time + ':00Z')))}</small>}<TimezoneSelect disabled={!reportSchedule.enabled} value={reportSchedule.timezone} onChange={timezone => change({ ...doc, refreshSchedule: { ...reportSchedule, timezone } })} /><button disabled={refreshingReport || !datasets.some(source => importedIds.includes(source.id) && source.dynamic)} onClick={async () => { setRefreshingReport(true); try { for (const source of datasets.filter(source => importedIds.includes(source.id) && source.dynamic)) { try { const result = await api(`/datasets/${source.id}/refresh?force=true`, json({})); acceptDataset(result); } catch (error) { setMessage((error as Error).message); } } } finally { setRefreshingReport(false); } }}>{t(refreshingReport ? '执行中…' : '执行')}</button><div className="report-refresh-results">{datasets.filter(source => importedIds.includes(source.id) && source.dynamic).slice(resultPage * 10, (resultPage + 1) * 10).map(source => <div key={source.id}><strong>{source.name}</strong><span>{t('上次执行')} · {formatUpdatedAt(source.dynamic?.last_run_at)}</span><span>{t('结果更新时间')} · {formatUpdatedAt(source.data_as_of)}</span><span>{source.dynamic?.refreshing ? t('执行中…') : executionError(source.dynamic?.last_error) || t('缓存结果：{0} 行', source.row_count)}</span><button disabled={refreshingReport} onClick={() => setQueryResults(source)}>{t('查看结果')}</button></div>)}</div><Pagination page={resultPage} total={datasets.filter(source => importedIds.includes(source.id) && source.dynamic).length} onChange={setResultPage} disabled={refreshingReport} /></fieldset>}{commentChart ? <CommentsPanel key={commentChart} reportId={id} chartId={commentChart} onClose={() => setCommentChart('')} onCount={count => setCommentCounts(previous => ({ ...previous, [commentChart]: count }))} /> : tile?.config.type === 'title' ? <>
+      <h3>{t('标题设置')}</h3>
+      <label>{t('标题')}<input value={tile.config.title ?? t('标题')} onChange={event => patchConfig({ title: event.target.value })} /></label>
+      {descriptionEditor}
+      <label>{t('字号（px）')}<input key={titleFontSize(tile.config)} type="number" min={1} step="any" required defaultValue={titleFontSize(tile.config)}
+        onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+        onBlur={event => {
+          const input = event.currentTarget;
+          const size = titleFontSize(tile.config);
+          if (!input.validity.valid) input.value = String(size);
+          else if (input.valueAsNumber !== size) patchConfig({ titleFontSize: input.valueAsNumber });
+        }} /></label>
+    </> : tile?.config.type === 'filter' ? <><h3>{t("筛选器配置")}</h3><FilterProperties config={tile.config} dataset={dataset} onChange={patchConfig} /><fieldset className="axis-settings filter-targets"><legend>{t('关联图表')}</legend><div className="filter-target-tree"><strong title={activeTab.name}>{activeTab.name}</strong>{tabCharts.some(chart => chart.config.type !== 'filter' && chart.config.type !== 'title') ? <ul><li>{(() => { const targets = tabCharts.filter(chart => chart.config.type !== 'filter' && chart.config.type !== 'title'), followed = (chart: Tile) => chart.followFilterIds ?? followedFilterIds(chart, tabCharts, datasets.find(item => item.id === chart.datasetId)); return <label><input type="checkbox" checked={targets.every(chart => followed(chart).includes(tile.id))} onChange={event => change({ ...doc, charts: tabCharts.map(chart => chart.config.type === 'filter' || chart.config.type === 'title' ? chart : { ...chart, followFilterIds: event.target.checked ? [...new Set([...followed(chart), tile.id])] : followed(chart).filter(value => value !== tile.id) }) })} /><span>{t('全部图表')}</span></label>; })()}</li>{tabCharts.filter(chart => chart.config.type !== 'filter' && chart.config.type !== 'title').sort((a, b) => a.y - b.y || a.x - b.x).map(chart => { const source = datasets.find(item => item.id === chart.datasetId), followed = chart.followFilterIds ?? followedFilterIds(chart, tabCharts, source); return <li key={chart.id}><label><input type="checkbox" checked={followed.includes(tile.id)} onChange={event => setChartFilters(chart, event.target.checked ? [...followed, tile.id] : followed.filter(value => value !== tile.id))} /><span title={chartTitle(chart.config, source)}>{chartTitle(chart.config, source) || t('未命名图表')}</span></label>{!filterMatchesChart(chart, tile, source) && <small>{t('（图表数据集没有该筛选字段，暂不生效）')}</small>}</li>; })}</ul> : <small>{t('当前页面没有图表')}</small>}</div></fieldset></> : tile ? <><h3>{t("图表配置")}</h3><label>{t('已关联数据集')}<select value={tile.datasetId} onChange={event => selectDataset(event.target.value)}>{datasets.filter(source => importedIds.includes(source.id) && !source.baseline_values && !Object.keys(source.annotation_fields || {}).length).map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label><label>{t("图表标题")}<input aria-label={t("图表标题")} value={chartTitle(tile.config, dataset)} onChange={e => patchConfig({ title: e.target.value, autoTitle: false })} /></label>{descriptionEditor}<fieldset className="axis-settings chart-type-settings"><legend>{t("图表类型")}</legend><select aria-label={t('图表类型')} value={tile.config.type} onChange={event => patchConfig({ type: event.target.value as ChartConfig['type'] })}>{chartRegistry.map(chart => <option key={chart.id} value={chart.id}>{chart.label}</option>)}</select></fieldset><fieldset className="axis-settings"><legend>{t('跟随筛选器')}</legend>
       <label>{t('跟随方式')}<select aria-label={t('跟随方式')} value={tile.followFilterIds === undefined ? 'nearest' : tile.followFilterIds.length ? 'selected' : 'none'} onChange={event => patchTile({ followFilterIds: event.target.value === 'nearest' ? undefined : event.target.value === 'none' ? [] : filterIds.length ? filterIds : pageFilters.slice(0, 1).map(filter => filter.id) })}>
         <option value="nearest">{t('上方最近的筛选器')}</option><option value="none">{t('不跟随')}</option><option value="selected">{t('指定筛选器')}</option>
       </select></label>
       {tile.followFilterIds === undefined && <small>{filterIds.length ? pageFilters.find(filter => filter.id === filterIds[0])?.config.title : t('上方没有包含相同字段的筛选器，当前不跟随')}</small>}
       {tile.followFilterIds !== undefined && pageFilters.map(filter => <label key={filter.id}><input type="checkbox" checked={chosenFilterIds.includes(filter.id)} onChange={event => patchTile({ followFilterIds: event.target.checked ? [...chosenFilterIds, filter.id] : chosenFilterIds.filter(id => id !== filter.id) })} />{filter.config.title || t('筛选器')}{!filterMatchesChart(tile, filter, dataset) && <small>{t('（图表数据集没有该筛选字段，暂不生效）')}</small>}</label>)}
       {tile.followFilterIds !== undefined && !pageFilters.length && <small>{t('当前页面没有筛选器')}</small>}
-    </fieldset>{tile.config.type === 'pie' && <label><input type="checkbox" checked={!!(tile.config.piePercent ?? tile.config.legendPercent)} onChange={event => patchConfig({ piePercent: event.target.checked, legendPercent: undefined, ...(event.target.checked ? { labels: true } : {}) })} />{t('数据标签显示百分比')}</label>}<FieldBindings key={tile.id} config={tile.config} fields={dataset?.schema || []} onChange={patchConfig} />{annotationSources.length > 0 && <><label><input type="checkbox" checked={!!tile.config.showAnnotations} onChange={event => patchConfig({ showAnnotations: event.target.checked })} />{t('显示标注')}</label>{tile.config.showAnnotations && <label>{t('标注样式')}<select value={tile.config.annotationStyle || 'range'} onChange={event => patchConfig({ annotationStyle: event.target.value as ChartConfig['annotationStyle'] })}><option value="start">{t('开始日期竖线')}</option><option value="range">{t('日期区间')}</option></select></label>}{tile.config.showAnnotations && annotationError && <p role="alert" className="source-error">{annotationError}</p>}</>}<label>{t("Legend / 系列分组")}<select aria-label={t("Legend 字段")} disabled={!['bar', 'line', 'area', 'mixed', 'scatter'].includes(tile.config.type)} value={tile.config.legendField || ''} onChange={e => patchConfig({ legendField: e.target.value })}><option value="">{t("不按字段分组")}</option>{dataset?.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => <option key={field.name} value={field.name}>{field.display_name || field.name}</option>)}</select></label><label>{t("聚合")}<select value={tile.config.aggregation} onChange={e => patchConfig({ aggregation: e.target.value as ChartConfig['aggregation'] })}>{(['sum', 'avg', 'count', 'min', 'max', 'count_distinct'] as const).map(a => <option key={a} value={a}>{t(({ sum: '求和', avg: '平均值', count: '计数', min: '最小值', max: '最大值', count_distinct: '去重计数' })[a])}</option>)}</select></label><label>{t("排序")}<select value={chartSort(tile.config)} onChange={e => patchConfig({ sort: e.target.value })}><option value="none">{t("原顺序")}</option><option value="desc">{t("指标降序")}</option><option value="asc">{t("指标升序")}</option></select></label>{(tile.config.measures || [tile.config.measure, tile.config.secondMeasure].filter(Boolean)).length > 1 && <label>{t('排序指标')}<select value={(tile.config.measures || [tile.config.measure, tile.config.secondMeasure]).includes(tile.config.sortMeasure) ? tile.config.sortMeasure : tile.config.measure} onChange={event => patchConfig({ sortMeasure: event.target.value })}>{(tile.config.measures || [tile.config.measure, tile.config.secondMeasure]).filter(Boolean).map(field => <option key={field} value={field}>{field}</option>)}</select></label>}<details className="top-n-settings" key={'top-n-' + tile.id}><summary>{t("Top N / 最大结果")}{tile.config.limit ? ` · ${tile.config.limit}` : ''}</summary><label>{t('最大结果数')}<input type="number" min={1} max={10000} step={1} value={tile.config.limit ?? ''} placeholder={t('不限制')} onChange={event => { const value = event.target.valueAsNumber; if (!event.target.value) patchConfig({ limit: undefined }); else if (Number.isInteger(value) && value >= 1 && value <= 10000) patchConfig({ limit: value }); }} /></label></details>{<label>{t('图例')}<select value={tile.config.legendAuto === false ? tile.config.legend ? 'show' : 'hide' : 'auto'} onChange={event => patchConfig({ legendAuto: event.target.value === 'auto', legend: event.target.value === 'show' })}><option value="auto">{t('自动')}</option><option value="show">{t('显示')}</option><option value="hide">{t('隐藏')}</option></select></label>}{['bar', 'line', 'area', 'mixed', 'waterfall', 'histogram', 'boxplot', 'heatmap', 'scatter'].includes(tile.config.type) && <label><input type="checkbox" checked={!!tile.config.axisHover} onChange={event => patchConfig({ axisHover: event.target.checked })} />{t('\u60ac\u505c\u6574\u5217 / \u6574\u884c\u663e\u793a\u6570\u503c')}</label>}{(['labels', 'smooth' , 'stacked', 'horizontal', 'donut'] as const).map((key, i) => (tile.config.type === 'mixed' && (key === 'smooth' || key === 'stacked') || tile.config.type === 'candlestick' && ['smooth', 'stacked', 'horizontal', 'donut'].includes(key)) ? null : <label key={key}><input type="checkbox" checked={!!tile.config[key]} onChange={e => patchConfig({ [key]: e.target.checked })} />{[t("数据标签"), t("平滑线"), t("堆叠"), t("横向"), t("环形")][i]}</label>)}{tile.config.type === 'map' && <label>{t("地图 GeoJSON")}<input type="file" accept=".json,.geojson" onChange={async e => { try { const f = e.target.files?.[0]; if (f) patchConfig({ mapGeoJSON: JSON.parse(await f.text()) }); } catch { setMessage(t("无效 GeoJSON")); } }} /></label>}</> : <p>{t("选择图表以配置数据、样式和筛选器")}</p>}</div></aside>
+    </fieldset>{tile.config.type === 'pie' && <label><input type="checkbox" checked={!!(tile.config.piePercent ?? tile.config.legendPercent)} onChange={event => patchConfig({ piePercent: event.target.checked, legendPercent: undefined, ...(event.target.checked ? { labels: true } : {}) })} />{t('数据标签显示百分比')}</label>}<FieldBindings key={tile.id} config={tile.config} fields={dataset?.schema || []} onChange={patchConfig} />{baselineOptions.length > 0 && <fieldset className="axis-settings"><legend>{t('基准值')}</legend>
+      <label><input type="checkbox" checked={!!tile.config.showBaselines} onChange={event => {
+        const { datasetId, field, row } = baselineOptions[0];
+        patchConfig({ showBaselines: event.target.checked, baselineFields: tile.config.baselineFields ?? [{ datasetId, field, row }] });
+      }} />{t('显示基准值')}</label>
+      {tile.config.showBaselines && baselineOptions.map(({ datasetId, field, row, label, value, format }) => {
+        const chosen = tile.config.baselineFields || [];
+        const matches = (item: (typeof chosen)[number]) => item.datasetId === datasetId && item.field === field && (item.row ?? 0) === row;
+        return <label key={JSON.stringify([datasetId, field, row])}><input type="checkbox" checked={chosen.some(matches)} onChange={event => patchConfig({ baselineFields: event.target.checked ? [...chosen, { datasetId, field, row }] : chosen.filter(item => !matches(item)) })} />{formatBaseline({ label, value, format })}</label>;
+      })}
+    </fieldset>}{annotationSources.length > 0 && <><label><input type="checkbox" checked={!!tile.config.showAnnotations} onChange={event => patchConfig({ showAnnotations: event.target.checked })} />{t('显示标注')}</label>{tile.config.showAnnotations && <label>{t('标注样式')}<select value={tile.config.annotationStyle || 'range'} onChange={event => patchConfig({ annotationStyle: event.target.value as ChartConfig['annotationStyle'] })}><option value="start">{t('开始日期竖线')}</option><option value="range">{t('日期区间')}</option></select></label>}{tile.config.showAnnotations && annotationError && <p role="alert" className="source-error">{annotationError}</p>}</>}<label>{t("Legend / 系列分组")}<select aria-label={t("Legend 字段")} disabled={!['bar', 'line', 'area', 'mixed', 'scatter'].includes(tile.config.type)} value={tile.config.legendField || ''} onChange={e => patchConfig({ legendField: e.target.value })}><option value="">{t("不按字段分组")}</option>{dataset?.schema.filter(field => ['string', 'date'].includes(field.type)).map(field => <option key={field.name} value={field.name}>{field.display_name || field.name}</option>)}</select></label><label>{t("聚合")}<select value={tile.config.aggregation} onChange={e => patchConfig({ aggregation: e.target.value as ChartConfig['aggregation'] })}>{(['sum', 'avg', 'count', 'min', 'max', 'count_distinct'] as const).map(a => <option key={a} value={a}>{t(({ sum: '求和', avg: '平均值', count: '计数', min: '最小值', max: '最大值', count_distinct: '去重计数' })[a])}</option>)}</select></label><label>{t("排序")}<select value={chartSort(tile.config)} onChange={e => patchConfig({ sort: e.target.value })}><option value="none">{t("原顺序")}</option><option value="desc">{t("指标降序")}</option><option value="asc">{t("指标升序")}</option></select></label>{(tile.config.measures || [tile.config.measure, tile.config.secondMeasure].filter(Boolean)).length > 1 && <label>{t('排序指标')}<select value={(tile.config.measures || [tile.config.measure, tile.config.secondMeasure]).includes(tile.config.sortMeasure) ? tile.config.sortMeasure : tile.config.measure} onChange={event => patchConfig({ sortMeasure: event.target.value })}>{(tile.config.measures || [tile.config.measure, tile.config.secondMeasure]).filter(Boolean).map(field => <option key={field} value={field}>{dataset?.schema.find(source => source.name === field)?.display_name || field}</option>)}</select></label>}<details className="top-n-settings" key={'top-n-' + tile.id}><summary>{t("Top N / 最大结果")}{tile.config.limit ? ` · ${tile.config.limit}` : ''}</summary><label>{t('最大结果数')}<input type="number" min={1} max={10000} step={1} value={tile.config.limit ?? ''} placeholder={t('不限制')} onChange={event => { const value = event.target.valueAsNumber; if (!event.target.value) patchConfig({ limit: undefined }); else if (Number.isInteger(value) && value >= 1 && value <= 10000) patchConfig({ limit: value }); }} /></label></details>{<label>{t('图例')}<select value={tile.config.legendAuto === false ? tile.config.legend ? 'show' : 'hide' : 'auto'} onChange={event => patchConfig({ legendAuto: event.target.value === 'auto', legend: event.target.value === 'show' })}><option value="auto">{t('自动')}</option><option value="show">{t('显示')}</option><option value="hide">{t('隐藏')}</option></select></label>}{tile.config.type === 'funnel' && <label>{t('图例方向')}<select value={tile.config.legendOrient || 'horizontal'} disabled={tile.config.legendAuto === false && !tile.config.legend} onChange={event => patchConfig({ legendOrient: event.target.value === 'vertical' ? 'vertical' : 'horizontal' })}><option value="horizontal">{t('横向')}</option><option value="vertical">{t('竖向')}</option></select></label>}{['bar', 'line', 'area', 'mixed', 'waterfall', 'histogram', 'boxplot', 'heatmap', 'scatter'].includes(tile.config.type) && <label><input type="checkbox" checked={!!tile.config.axisHover} onChange={event => patchConfig({ axisHover: event.target.checked })} />{t('\u60ac\u505c\u6574\u5217 / \u6574\u884c\u663e\u793a\u6570\u503c')}</label>}{(['labels', 'smooth' , 'stacked', 'horizontal', 'donut'] as const).map((key, i) => (tile.config.type === 'mixed' && (key === 'smooth' || key === 'stacked') || tile.config.type === 'candlestick' && ['smooth', 'stacked', 'horizontal', 'donut'].includes(key)) ? null : <label key={key}><input type="checkbox" checked={key === 'labels' ? tile.config.labels ?? true : !!tile.config[key]} onChange={e => patchConfig({ [key]: e.target.checked })} />{[t("数据标签"), t("平滑线"), t("堆叠"), t("横向"), t("环形")][i]}</label>)}{tile.config.type === 'map' && <label>{t("地图 GeoJSON")}<input type="file" accept=".json,.geojson" onChange={async e => { try { const f = e.target.files?.[0]; if (f) patchConfig({ mapGeoJSON: JSON.parse(await f.text()) }); } catch { setMessage(t("无效 GeoJSON")); } }} /></label>}</> : <p>{t("选择图表以配置数据、样式和筛选器")}</p>}</div></aside>
     {deleted && deleted.session === session.current && <div className="delete-toast" data-testid="delete-toast" role="status"><span>{t("图表已删除")}</span><button onClick={restoreDeleted}>{t("撤销")}</button><small>{t("5 秒内可恢复")}</small></div>}
 
     {showSettings && <main className="settings-page" aria-label={t("设置")}><nav className="settings-nav" aria-label={t('设置导航')}>{[
@@ -1194,16 +1395,21 @@ export default function App() {
         <div className="import-options" onChange={() => setEditingSource(true)}><label>{t("文本编码")}<select aria-label={t("文本编码")} disabled={busy || !file || !file.name.toLowerCase().endsWith('.csv')} value={encoding} onChange={e => setEncoding(e.target.value)}><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030 / GBK</option><option value="utf-16">UTF-16</option><option value="cp1252">Windows-1252</option></select></label><label>{t("分隔符")}<select aria-label={t("分隔符")} disabled={busy || (!!file && !file.name.toLowerCase().endsWith('.csv'))} value={delimiter} onChange={e => setDelimiter(e.target.value)}><option value="">{t("自动识别")}</option><option value=",">{t("逗号")}</option><option value=";">{t("分号")}</option><option value={'\t'}>Tab</option><option value="|">{t("竖线")}</option></select></label><label className="header-option"><input type="checkbox" disabled={busy} checked={hasHeader} onChange={e => setHasHeader(e.target.checked)} />{t("首行作为列名")}</label></div>
         {sheets.length > 0 && <label className="import-sheet">{t("工作表")}<select aria-label={t("工作表")} disabled={busy} value={sheet} onChange={e => setSheet(e.target.value)}>{sheets.map(value => <option key={value}>{value}</option>)}</select></label>}
       </> : <>
-        <label className="dataset-name"><DatasetTag dynamic={dynamicImport} />{t("数据集名称")}<input aria-label={t("数据集名称")} maxLength={255} readOnly={viewingDataset} disabled={busy} value={datasetName} onChange={e => setDatasetName(e.target.value)} /></label>
+        <label className="dataset-name"><DatasetTag dynamic={dynamicImport} baseline={!dynamicImport && asBaseline} />{t("数据集名称")}<input aria-label={t("数据集名称")} maxLength={255} readOnly={viewingDataset} disabled={busy} value={datasetName} onChange={e => setDatasetName(e.target.value)} /></label>
+        {preview?.schema.length > 10 && !editingField && <input className="field-settings-search" type="search" aria-label={t('搜索源字段或展示名称')} placeholder={t('搜索源字段或展示名称')} value={fieldSearch} onChange={event => setFieldSearch(event.target.value)} />}
 
         {sheets.length > 0 && <label className="import-sheet">{t("工作表")}<select aria-label={t("工作表")} disabled={busy} value={sheet} onChange={e => importRequest(false, e.target.value)}>{sheets.map(value => <option key={value}>{value}</option>)}</select></label>}
-        {editingField && editingDataset ? <ValueLabelsEditor dataset={editingDataset} field={editingField} names={preview.field_formats?.[editingField]?.valueLabels || {}} busy={busy} onChange={valueLabels => setPreview((previous: any) => ({ ...previous, field_formats: { ...previous.field_formats, [editingField]: { ...(previous.field_formats?.[editingField] || { kind: 'text', format: 'number', decimals: 0 }), valueLabels } } }))} /> : <FieldSettings readOnly={viewingDataset} onRemove={viewingDataset ? undefined : index => { if (asAnnotation) setAnnotationOrder([...annotationOrder].filter((_, i) => i !== index)); setPreview((previous: any) => ({ ...previous, schema: previous.schema.filter((_: any, i: number) => i !== index) })); }} annotationRoles={asAnnotation ? annotationOrder : undefined} onAnnotationRole={(index, role) => { const next = [...annotationOrder], old = next[index], other = next.indexOf(role); if (role) { next[index] = role; if (other >= 0) next[other] = old; } else delete next[index]; setAnnotationOrder(next); setPreview((previous: any) => annotationFieldSettings(previous, next)); }} preserveOrder={asAnnotation} onEditValues={editingDataset && !viewingDataset ? setEditingField : undefined} typeIssues={preview.typeIssues} onReorder={viewingDataset ? undefined : schema => { if (asAnnotation) setAnnotationOrder(schema.map(field => annotationOrder[preview.schema.findIndex((item: any) => (item.source || item.name) === (field.source || field.name))])); setPreview((previous: any) => ({ ...previous, schema })); }} defaultDecimals={defaultDecimals} defaultRounding={defaultRounding} schema={preview.schema} rows={preview.rows || []} formats={preview.field_formats} busy={busy}
+        {editingField && editingDataset ? <ValueLabelsEditor dataset={editingDataset} field={editingField} names={preview.field_formats?.[editingField]?.valueLabels || {}} busy={busy} onChange={valueLabels => setPreview((previous: any) => ({ ...previous, field_formats: { ...previous.field_formats, [editingField]: { ...(previous.field_formats?.[editingField] || { kind: 'text', format: 'number', decimals: 0 }), valueLabels } } }))} /> : <FieldSettings search={fieldSearch} readOnly={viewingDataset} onRemove={viewingDataset ? undefined : index => { if (asAnnotation) setAnnotationOrder([...annotationOrder].filter((_, i) => i !== index)); setPreview((previous: any) => ({ ...previous, schema: previous.schema.filter((_: any, i: number) => i !== index) })); }} annotationRoles={asAnnotation ? annotationOrder : undefined} onAnnotationRole={(index, role) => { const next = [...annotationOrder], old = next[index], other = next.indexOf(role); if (role) { next[index] = role; if (other >= 0) next[other] = old; } else delete next[index]; setAnnotationOrder(next); setPreview((previous: any) => annotationFieldSettings(previous, next)); }} preserveOrder={asAnnotation} onEditValues={editingDataset && !viewingDataset ? setEditingField : undefined} typeIssues={preview.typeIssues} onReorder={viewingDataset ? undefined : schema => { if (asAnnotation) setAnnotationOrder(schema.map(field => annotationOrder[preview.schema.findIndex((item: any) => (item.source || item.name) === (field.source || field.name))])); setPreview((previous: any) => ({ ...previous, schema })); }} defaultDecimals={defaultDecimals} defaultRounding={defaultRounding} schema={preview.schema} rows={preview.rows || []} formats={preview.field_formats} busy={busy}
           onChange={(field, type, format) => setPreview((previous: any) => ({ ...previous, schema: previous.schema.map((item: any) => (item.source || item.name) === field ? { ...item, type } : item), field_formats: { ...previous.field_formats, [field]: format } }))}
           onRename={(index, name) => setPreview((previous: any) => ({ ...previous, schema: previous.schema.map((field: any, i: number) => i === index ? { ...field, source: field.source || field.name, name } : field) }))} />}
       </>}
       {message && (sourceKind === 'static' || preview || editingDataset?.dynamic) && (preview?.typeIssues ? <div key={toast.id} className="workbench-message" role="status">{message}</div> : <p className="import-error" role="alert">{message}</p>)}
       </div>
-      {!preview && !editingDataset?.dynamic && <AnnotationImport merge={mergeAnnotations} onMerge={setMergeAnnotations} checked={asAnnotation} busy={busy} onChecked={setAsAnnotation} />}
+      {!preview && !editingDataset?.dynamic &&
+        <AnnotationImport merge={mergeAnnotations} onMerge={setMergeAnnotations} checked={asAnnotation} busy={busy || asBaseline} onChecked={setAsAnnotation}>
+        {sourceKind === 'static' && <label><input type="checkbox" checked={asBaseline} disabled={busy || !!editingDataset || asAnnotation} onChange={event => setAsBaseline(event.target.checked)} />{t('基准值')}</label>}
+        {sourceKind === 'static' && asBaseline && <small className="source-hint">{t('静态基准支持多行，每个数值单元格可作为一个基准。')}</small>}
+      </AnnotationImport>}
       </div>
       <div className="modal-actions">{viewingDataset ? <button onClick={() => { setShowImport(false); setPreview(null); setEditingDataset(null); setViewingDataset(false); }}>{t('关闭')}</button> : <>{editingField && <button disabled={busy} onClick={() => setEditingField('')}>{t('\u8fd4\u56de\u5b57\u6bb5\u914d\u7f6e')}</button>}<button className="import-cancel" disabled={busy && !dynamicQuerying} onClick={() => { setBusy(false); setShowImport(false); setPreview(null); setEditingDataset(null); setViewingDataset(false); }}>{t("取消")}</button>{preview && <><button disabled={busy} onClick={() => setPreview((previous: any) => ({ ...previous, schema: detectedPreview.current.schema, field_formats: detectedPreview.current.field_formats }))}>{t("重置")}</button><button disabled={busy} onClick={() => void showDataSource()}><img src="/import-icons/arrow-left.svg" alt="" />{t("数据源")}</button></>}<button className="primary" type={!preview && dynamicImport ? 'submit' : 'button'} form={!preview && dynamicImport ? 'dynamic-source-import' : undefined} disabled={busy || (preview ? !datasetName.trim() : dynamicImport ? !dynamicReady : !file && !paste.trim())} onClick={() => { if (preview || !dynamicImport) void importRequest(!!preview); }}>{busy ? <><span className="busy-spinner" aria-hidden="true" />{t(dynamicQuerying ? '查询中…' : '处理中…')}</> : preview ? t("保存") : <>{t("字段配置")}<img src="/import-icons/arrow-right.svg" alt="" /></>}</button></>}</div>
     </section></dialog>}
