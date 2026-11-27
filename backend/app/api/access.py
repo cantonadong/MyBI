@@ -1,7 +1,7 @@
 """Portals, roles, user list and report permissions (configuration only).
 
 Login and enforcement are not implemented yet: they will come with the company account system. Until then these
-records are stored and edited here; portals are served read-only on the public service and list published reports.
+records are stored and edited here; portal views on the main service list published reports.
 """
 from getpass import getuser
 
@@ -380,8 +380,9 @@ def delete_portal(portal_id: str):
         session.execute(delete(Portal).where(Portal.id == portal_id))
 
 
-def public_portal(portal_id: str):
-    """What the read-only service shows: the portal name and its published reports, in the configured order."""
+@router.get('/portal-view/{portal_id}')
+def portal_view(portal_id: str):
+    """Return the portal name and published reports in the configured order."""
     with SessionLocal() as session:
         portal = session.get(Portal, portal_id)
         if not portal:

@@ -35,7 +35,7 @@ export function PublicAccessSettings({ onMessage }: { onMessage: (message: strin
   </fieldset><p role="status">{t(value.running ? '只读服务运行中' : '只读服务未运行')}{value.running && ` · 0.0.0.0:${value.listening_port}`}</p>{(error || value.error) && <p role="alert">{error || value.error}</p>}</form></section>;
 }
 
-// Address of a page on the read-only service, e.g. /view/{report} or /portal/{portal}.
+// Address of a published report on the read-only service.
 export async function publicLink(path: string) {
   const settings = await api('/public-access');
   if (!settings.enabled || !settings.running) throw new Error(t('请先在设置中启用只读服务'));

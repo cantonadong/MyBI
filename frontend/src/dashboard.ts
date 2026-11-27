@@ -294,10 +294,7 @@ export function effectiveFilters(mode: FilterMode, global: Filter[], local: Filt
 export type ExportPayload = { report: { id: string; name: string; document: Document; theme: Record<string, unknown> }; canvasWidth?: number; data: Record<string, OfflineData & { snapshot_id?: string; data_as_of?: string }>; annotations: Record<string, unknown[]> };
 export const offlineExport = (window as unknown as { __MYBI_EXPORT__?: ExportPayload }).__MYBI_EXPORT__;
 export const publicReportAccess = !!offlineExport || document.documentElement.dataset.publicView === 'true';
-// Portal page on the read-only service: /portal/{id}; the report being shown is tracked here for public API paths.
-export const portalId = publicReportAccess && !offlineExport ? window.location.pathname.match(/^\/portal\/([^/]+)$/)?.[1] : undefined;
-let portalReport = '';
-export function setPortalReport(reportId: string) { portalReport = reportId; }
+export const portalId = !publicReportAccess ? window.location.pathname.match(/^\/portal\/([^/]+)$/)?.[1] : undefined;
 
 function offlineApi(payload: ExportPayload, path: string, options?: RequestInit) {
   if (/^\/dashboards\/[^/]+\/published$/.test(path)) return JSON.parse(JSON.stringify(payload.report));
@@ -319,10 +316,8 @@ export async function api(path: string, options?: RequestInit) {
     try { return offlineApi(offlineExport, path, options); }
     catch (error) { throw new Error(t((error as Error).message)); }
   }
-  if (publicReportAccess && portalId && path === '/portal') path = '/public-portal/' + portalId;
-  else if (publicReportAccess) {
-    // A portal page shows one of its reports at a time; its report requests go through the same public endpoints.
-    const reportId = window.location.pathname.match(/^\/view\/([^/]+)$/)?.[1] || (portalId && portalReport ? encodeURIComponent(portalReport) : undefined);
+  if (publicReportAccess) {
+    const reportId = window.location.pathname.match(/^\/view\/([^/]+)$/)?.[1];
     if (!reportId) throw new Error(t('报表不存在或未发布'));
     // /dashboards/{id}/published, /comment-counts, /charts/{chart}/comments → /public/{id}/…
     const own = `/dashboards/${decodeURIComponent(reportId)}`;

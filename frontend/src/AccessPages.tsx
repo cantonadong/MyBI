@@ -5,7 +5,7 @@ import { t, useLanguage } from './i18n';
 import { Icon } from './Icon';
 import { Pagination } from './Pagination';
 import { confirmAction } from './confirmAction';
-import { copyText, publicLink } from './PublicAccessSettings';
+import { copyText } from './PublicAccessSettings';
 import './search-select.css';
 
 type User = { id: string; username: string; email: string; current?: boolean };
@@ -79,7 +79,7 @@ export function PortalsPage({ onMessage }: { onMessage: (text: string) => void }
     setForm(null); onMessage(t('已保存'));
   });
   const remove = async (portal: PortalItem) => { if (await confirmAction(t('确定删除 Portal“{0}”？', portal.name))) await run(async () => { await api(`/portals/${portal.id}`, { method: 'DELETE' }); setPortals(previous => previous.filter(item => item.id !== portal.id)); }); };
-  const link = (portal: PortalItem) => publicLink('/portal/' + encodeURIComponent(portal.id));
+  const link = (portal: PortalItem) => window.location.origin + '/portal/' + encodeURIComponent(portal.id);
   const toggleReport = (reportId: string, checked: boolean) => setForm(previous => previous && ({ ...previous, report_ids: checked ? [...previous.report_ids, reportId] : previous.report_ids.filter(value => value !== reportId) }));
   return <section className="access-section">
     <header className="reports-heading"><h2>Portal</h2>{!form && <button className="primary" onClick={() => { setForm({ name: '', report_ids: [] }); setError(''); }}>{t('新建')}</button>}</header>
@@ -94,8 +94,10 @@ export function PortalsPage({ onMessage }: { onMessage: (text: string) => void }
           <td className="report-id">{portal.local_id}</td>
           <td title={portal.reports.map(report => report.name).join(', ')}>{portal.reports.length ? portal.reports.map(report => report.name).join(', ') : '—'}</td>
           <td><div className="report-actions">
-            <button disabled={busy} onClick={() => void run(async () => { await copyText(await link(portal)); onMessage(t('Portal 链接已复制')); })}><Icon name="link" />{t('复制链接')}</button>
-            <button disabled={busy} onClick={() => void run(async () => { window.open(await link(portal), '_blank', 'noopener'); })}><Icon name="view" />{t('查看')}</button>
+            <button disabled={busy} onClick={() => void run(async () => { await copyText(link(portal)); onMessage(t('Portal 链接已复制')); })}><Icon name="link" />{t('复制链接')}</button>
+            <form action={link(portal)} target="_blank" rel="noopener">
+              <button type="submit" disabled={busy}><Icon name="view" />{t('查看')}</button>
+            </form>
             <button disabled={busy} onClick={() => setForm({ id: portal.id, name: portal.name, report_ids: portal.reports.map(report => report.id) })}><Icon name="edit" />{t('编辑')}</button>
             <button className="report-delete" disabled={busy} onClick={() => void remove(portal)}><Icon name="delete" />{t('删除')}</button>
           </div></td>

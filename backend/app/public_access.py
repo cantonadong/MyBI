@@ -139,23 +139,10 @@ def public_add_comment(report_id: str, chart_id: str, body: PublicComment):
     return {'saved': True}
 
 
-@public_app.get('/api/public-portal/{portal_id}')
-def portal(portal_id: str):
-    from .api.access import public_portal
-    return public_portal(portal_id)
-
-
-@public_app.get('/portal/{portal_id}', response_class=HTMLResponse)
-def portal_page(portal_id: str):
-    from .api.access import public_portal
-    public_portal(portal_id)
-    return HTMLResponse((web_dist / 'index.html').read_text(encoding='utf-8').replace('<html', '<html data-public-view="true"', 1), headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
-
-
 @public_app.get('/', response_class=HTMLResponse)
 def service_status():
     # Reachability check for the 访问 buttons in Settings: no report data, just confirms the service answers.
-    return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyBI</title><style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#f4f6fa;font:14px Inter,"Segoe UI",sans-serif;color:#182339}main{padding:24px 32px;border:1px solid #dce3ed;border-radius:9px;background:#fff;text-align:center}p{margin:6px 0 0;color:#64728a;font-size:12px}</style></head><body><main><strong>MyBI 只读服务运行中 / MyBI read-only service is running</strong><p>打开已发布报表或 Portal 的链接即可查看。 Open a published report or portal link to view it.</p></main></body></html>', headers={'Cache-Control': 'no-store'})
+    return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyBI</title><style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#f4f6fa;font:14px Inter,"Segoe UI",sans-serif;color:#182339}main{padding:24px 32px;border:1px solid #dce3ed;border-radius:9px;background:#fff;text-align:center}p{margin:6px 0 0;color:#64728a;font-size:12px}</style></head><body><main><strong>MyBI 只读服务运行中 / MyBI read-only service is running</strong><p>打开已发布报表的链接即可查看。 Open a published report link to view it.</p></main></body></html>', headers={'Cache-Control': 'no-store'})
 
 
 @public_app.get('/view/{report_id}', response_class=HTMLResponse)

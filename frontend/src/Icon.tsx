@@ -14,6 +14,7 @@ const paths: Record<string, string> = {
   run: 'M7 4v16l13-8z',
   portal: 'M3 4h18v16H3zM3 9h18M9 9v11',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  share: 'M12 15V3m-4 4 4-4 4 4M8 11H5v10h14V11h-3',
   folder: 'M3 6h6l2 2h10v11H3z',
   user: 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21v-1a8 8 0 0 1 16 0v1',
   roles: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a7 7 0 0 1 14 0v1M17 3.5a4 4 0 0 1 0 7.5M22 21v-1a7 7 0 0 0-4-6.3',

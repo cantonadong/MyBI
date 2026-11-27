@@ -13,7 +13,7 @@ import 'react-resizable/css/styles.css';
 import { ChartView } from './charts/ChartView';
 import { formatBaseline } from './fieldDisplay';
 import { baselineAxisCharts, chartRegistry, ChartConfig, ChartType } from './charts/registry';
-import { api, tabTitle, publicReportAccess, offlineExport, portalId, setPortalReport, fieldTypeIssues, controlFilters, filterMatchesChart, followedFilterIds, nextFilterTitle, nextMetricConfig, normalizeDocument, closeVacatedRows, arrangeAfterChange, minCols, ROW_HEIGHT, ROW_GAP, ROW_UNIT, MIN_CHART_ROWS, MIN_FILTER_ROWS, minWidth, FILTER_DEFAULT_ROWS, chartTitle, chartSort, Dataset, Document, SavedReport, Filter, json, Tile, gridFor, findGridSpace, insertGridTile, moveGridTile, pushGridTiles, placeInRowGap, InsertSide } from './dashboard';
+import { api, tabTitle, publicReportAccess, offlineExport, portalId, fieldTypeIssues, controlFilters, filterMatchesChart, followedFilterIds, nextFilterTitle, nextMetricConfig, normalizeDocument, closeVacatedRows, arrangeAfterChange, minCols, ROW_HEIGHT, ROW_GAP, ROW_UNIT, MIN_CHART_ROWS, MIN_FILTER_ROWS, minWidth, FILTER_DEFAULT_ROWS, chartTitle, chartSort, Dataset, Document, SavedReport, Filter, json, Tile, gridFor, findGridSpace, insertGridTile, moveGridTile, pushGridTiles, placeInRowGap, InsertSide } from './dashboard';
 import { AnnotationImport, AnnotationRole } from './AnnotationImport';
 import type { Annotation, AnnotationFields, ExportPayload } from './dashboard';
 import { FieldBindings } from './FieldBindings';
@@ -24,7 +24,7 @@ import { Icon } from './Icon';
 import { FilterControl, FilterProperties } from './FilterControl';
 import { ReportsPage } from './ReportsPage';
 import { UserProfile } from './UserProfile';
-import { PublicAccessSettings, copyPublicReportLink } from './PublicAccessSettings';
+import { PublicAccessSettings, copyPublicReportLink, copyText } from './PublicAccessSettings';
 import { CommentsPanel } from './CommentsPanel';
 import { DynamicSource, executionError, queryDuration, DynamicSourceConfig, DynamicSourcePreview, DynamicSourceCache } from './DynamicSource';
 import { ConnectionsSettings } from './ConnectionsSettings';
@@ -214,8 +214,8 @@ export default function App() {
   const [dynamicQuerying, setDynamicQuerying] = useState(false);
   const [dynamicReady, setDynamicReady] = useState(false);
   const [sheets, setSheets] = useState<string[]>([]), [sheet, setSheet] = useState(''), [preview, setPreview] = useState<any>(null), [busy, setBusy] = useState(false);
-  const [previewMode, setPreviewMode] = useState(publicReportAccess);
-  const [publishedView, setPublishedView] = useState(publicReportAccess);
+  const [previewMode, setPreviewMode] = useState(publicReportAccess || !!portalId);
+  const [publishedView, setPublishedView] = useState(publicReportAccess || !!portalId);
   const [publishing, setPublishing] = useState(false);
   const [permissionReport, setPermissionReport] = useState(''), [portal, setPortal] = useState<PortalInfo | null>(null), [portalReportId, setPortalReportId] = useState(''), [publishedTheme, setPublishedTheme] = useState<{ palette: string; colors?: string[]; locale?: 'en' | 'zh-CN'; canvasWidth?: number }>({ palette: 'modern' });
   const [commentChart, setCommentChart] = useState('');
@@ -227,7 +227,7 @@ export default function App() {
     return () => { active = false; };
   }, [id, publishedView]);
   const [panel, setPanel] = useState<'charts' | 'history' | ModulePanel>('charts');
-  const [showReports, setShowReports] = useState(!publicReportAccess);
+  const [showReports, setShowReports] = useState(!publicReportAccess && !portalId);
   const [reportAction, setReportAction] = useState<{ kind: 'new' } | { kind: 'delete'; report: SavedReport } | null>(null);
   const reportDialog = useRef<HTMLDialogElement>(null);
   const [reportBusy, setReportBusy] = useState(false), [reportError, setReportError] = useState('');
@@ -441,8 +441,20 @@ export default function App() {
     window.addEventListener('focus', refreshDatasets);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', refreshDatasets); };
   }, [id, publishedView, dynamicDatasetIds]);
-  // Published pages drop the empty rows above a tab's first chart.
-  const displayFor = (charts: Tile[]) => { const top = publishedView && charts.length ? Math.min(...charts.map(chart => chart.y)) : 0; return publishedView ? charts.map(chart => ({ ...chart, y: chart.y - top })) : charts; };
+  const singleColumn = publishedView && surfaceWidth > 0 && surfaceWidth < 720;
+  const displayFor = (charts: Tile[]) => {
+    if (!publishedView || !charts.length) return charts;
+    if (singleColumn) {
+      let row = 0;
+      return [...charts].sort((a, b) => a.y - b.y || a.x - b.x).map(chart => {
+        const y = row;
+        row += chart.h;
+        return { ...chart, x: 0, y, w: grid.columns };
+      });
+    }
+    const top = Math.min(...charts.map(chart => chart.y));
+    return charts.map(chart => ({ ...chart, y: chart.y - top }));
+  };
   const displayCharts = displayFor(tabCharts);
   const chartsOfTab = (tabId: string) => tabId === activeTab.id ? tabCharts : doc.charts.filter(chart => (chart.tabId || tabs[0].id) === tabId);
   // Tabs already shown stay mounted (hidden) so switching back is instant instead of rebuilding every chart.
@@ -467,8 +479,8 @@ export default function App() {
       // Measure the tab list container, not a tab: the list scrolls horizontally to show the active tab.
       const bar = workspaceScroll.current?.querySelector<HTMLElement>(':scope > .report-tabs-top'), list = bar?.querySelector<HTMLElement>('[role=tablist]'), surface = canvasRef.current;
       if (!bar || !list || !surface) return;
-      const delta = surface.getBoundingClientRect().left - list.getBoundingClientRect().left;
-      if (Math.abs(delta) > 0.5) bar.style.paddingLeft = Math.max(0, (parseFloat(getComputedStyle(bar).paddingLeft) || 0) + delta) + 'px';
+      const inset = Math.max(0, surface.getBoundingClientRect().left - list.getBoundingClientRect().left);
+      list.style.setProperty('--tab-start-inset', `${inset}px`);
     };
     align();
     const observer = new ResizeObserver(align);
@@ -476,20 +488,62 @@ export default function App() {
     if (canvasRef.current) observer.observe(canvasRef.current);
     return () => observer.disconnect();
   }, [publishedView, tabs.length, publishedCanvasWidth, surfaceWidth]);
-  // Published pages: scrolling down tucks the tab bar away, scrolling up brings it back.
+  const [viewMenu, setViewMenu] = useState<'reports' | 'tabs' | null>(null);
+  // Reveal viewing controls at either end and when scrolling back up.
   useEffect(() => {
-    const scroller = workspaceScroll.current;
+    const scroller = workspaceScroll.current, shell = appRef.current;
     const bar = scroller?.querySelector<HTMLElement>(':scope > .report-tabs-top');
-    if (!publishedView || !scroller || !bar) return;
+    if (!publishedView || !scroller || !shell) return;
     let last = scroller.scrollTop;
+    let timer: number, tabTimer: number;
+    const atBottom = () => scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1;
+    const atEdge = () => scroller.scrollTop <= 1 || atBottom();
+    const restartTabTimer = () => {
+      if (!bar || atEdge() || bar.classList.contains('report-tabs-forced-hidden')) return;
+      window.clearTimeout(tabTimer);
+      bar.classList.remove('report-tabs-hidden');
+      tabTimer = window.setTimeout(() => bar.classList.add('report-tabs-hidden'), 2000);
+    };
+    const hideActions = () => shell.classList.add('mobile-view-actions-hidden');
+    const showActions = () => {
+      window.clearTimeout(timer);
+      shell.classList.remove('mobile-view-actions-hidden');
+      timer = window.setTimeout(hideActions, atEdge() ? 2000 : 1000);
+    };
+    bar?.classList.toggle('report-tabs-forced-hidden', last > 1 && atBottom());
+    showActions();
     const scroll = () => {
       const top = scroller.scrollTop, delta = top - last;
-      if (Math.abs(delta) < 4) return;
-      bar.classList.toggle('report-tabs-hidden', delta > 0 && top > 24);
+      const edge = atEdge();
+      if (!edge && Math.abs(delta) < 4) return;
+      window.clearTimeout(tabTimer);
+      bar?.classList.remove('report-tabs-hidden');
+      bar?.classList.toggle('report-tabs-forced-hidden', top > 1 && (atBottom() || delta > 0));
+      if (!edge && delta < 0) restartTabTimer();
+      if (!edge && delta > 0) {
+        window.clearTimeout(timer);
+        hideActions();
+        setViewMenu(null);
+      } else showActions();
       last = top;
     };
+    const revealAtEdge = () => { if (atEdge()) showActions(); };
     scroller.addEventListener('scroll', scroll, { passive: true });
-    return () => { scroller.removeEventListener('scroll', scroll); bar.classList.remove('report-tabs-hidden'); };
+    scroller.addEventListener('pointerdown', revealAtEdge, { passive: true });
+    bar?.addEventListener('mouseleave', restartTabTimer);
+    bar?.addEventListener('touchend', restartTabTimer);
+    bar?.addEventListener('touchcancel', restartTabTimer);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(tabTimer);
+      scroller.removeEventListener('scroll', scroll);
+      scroller.removeEventListener('pointerdown', revealAtEdge);
+      bar?.removeEventListener('mouseleave', restartTabTimer);
+      bar?.removeEventListener('touchend', restartTabTimer);
+      bar?.removeEventListener('touchcancel', restartTabTimer);
+      bar?.classList.remove('report-tabs-hidden', 'report-tabs-forced-hidden');
+      shell.classList.remove('mobile-view-actions-hidden');
+    };
   }, [publishedView, id, tabs.length]);
   const pageFilters = tabCharts.filter(chart => chart.config.type === 'filter');
   const filterIds = tile ? followedFilterIds(tile, tabCharts, dataset) : [];
@@ -895,7 +949,7 @@ export default function App() {
     const timer = window.setTimeout(() => setDeleted(null), Math.max(0, deleted.expiresAt - Date.now()));
     return () => window.clearTimeout(timer);
   }, [deleted]);
-  useEffect(() => { if (!publicReportAccess) refresh(); }, []);
+  useEffect(() => { if (!publicReportAccess && !portalId) refresh(); }, []);
   const addChart = (type: ChartType) => {
     if (type === 'title') {
       const added: Tile = { id: crypto.randomUUID(), datasetId: '', config: { type }, filters: [], filterMode: 'global', x: 0, y: Math.max(0, ...tabCharts.map(chart => chart.y + chart.h)), w: grid.columns, h: titleRows };
@@ -1022,7 +1076,16 @@ export default function App() {
     finally { if (session.current === token) setOpeningReport(false); }
   };
   // Portal page: the left menu switches between the portal's published reports in place.
-  const openPortalReport = (reportId: string) => { setPortalReport(reportId); setPortalReportId(reportId); void openPublished(reportId); };
+  const openPortalReport = (reportId: string) => { setPortalReportId(reportId); void openPublished(reportId); };
+  const shareViewingLink = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) await navigator.share({ title: portal?.name || name, url });
+      else { await copyText(url); setMessage(t(portal ? 'Portal 链接已复制' : '报表链接已复制')); }
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') setMessage(t('分享链接失败'));
+    }
+  };
   const viewReport = async (reportId: string) => {
     const tab = window.open('about:blank', '_blank');
     if (tab) tab.opener = null;
@@ -1089,7 +1152,7 @@ export default function App() {
   const restoreRoute = useRef<() => void>();
   restoreRoute.current = () => {
     if (offlineExport) { void openPublished(offlineExport.report.id); return; }
-    if (portalId) { api('/portal').then((value: PortalInfo) => { setPortal(value); if (value.reports[0]) openPortalReport(value.reports[0].id); }).catch(error => setMessage(error.message)); return; }
+    if (portalId) { api('/portal-view/' + portalId).then((value: PortalInfo) => { setPortal(value); if (value.reports[0]) openPortalReport(value.reports[0].id); }).catch(error => setMessage(error.message)); return; }
     const path = window.location.pathname.replace(/\/$/, '') || '/';
     const view = path.match(/^\/view\/([^/]+)$/);
     if (view) { void openPublished(decodeURIComponent(view[1])); return; }
@@ -1258,7 +1321,23 @@ export default function App() {
       {(['portals', 'users', 'roles', 'permissions'] as const).map(module => <button key={module} aria-label={t(moduleLabels[module])} className={!showSettings && !showReports && panel === module ? 'rail-active' : ''} onClick={() => { setShowSettings(false); setShowReports(false); setPanel(module); navigateTo(modulePaths[module]); }}><Icon name={module === 'portals' ? 'portal' : module === 'users' ? 'user' : module === 'roles' ? 'roles' : 'permissions'} /><span>{t(moduleLabels[module])}</span></button>)}
       <button className={showSettings ? 'rail-active rail-settings' : 'rail-settings'} aria-label={t("设置")} onClick={() => { setShowSettings(true); navigateTo('/settings'); }}><Icon name="settings" /><span>{t("设置")}</span></button>
     </aside>
-    {portal && <nav className="portal-menu" aria-label={portal.name}><h1 title={portal.name}>{portal.name}</h1>{portal.reports.length ? portal.reports.map(report => <button key={report.id} aria-current={report.id === portalReportId ? 'page' : undefined} title={report.name} onClick={() => { if (report.id !== portalReportId) openPortalReport(report.id); }}>{report.name}</button>) : <p>{t('暂无已发布的报表')}</p>}</nav>}
+    {publishedView && (portal || viewMenu) && <nav id="view-report-menu" className={`portal-menu${viewMenu ? ' view-menu-open' : ''}`} aria-label={portal?.name || t('报表标签页')}>
+      {portal && <h1 title={portal.name}>{portal.name}</h1>}
+      {portal && !portal.reports.length && <p>{t('暂无已发布的报表')}</p>}
+      {portal && <div className="portal-report-options" hidden={viewMenu === 'tabs'}>{portal.reports.map(report => <button key={report.id} aria-current={report.id === portalReportId ? 'page' : undefined} title={report.name} onClick={() => {
+        if (viewMenu) setViewMenu('tabs');
+        if (report.id !== portalReportId) openPortalReport(report.id);
+      }}>{report.name}</button>)}</div>}
+      {viewMenu === 'tabs' && <div className="mobile-tab-options">
+        {portal && <button type="button" onClick={() => setViewMenu('reports')}>{t('返回报表列表')}</button>}
+        {portal && <p>{portal.reports.find(report => report.id === portalReportId)?.name}</p>}
+        {portal && id !== portalReportId ? (openingReport && <p role="status">{t('正在打开报表…')}</p>) : tabs.map(tab => <button type="button" key={tab.id} aria-current={tab.id === activeTab.id ? 'page' : undefined} title={tabTitle(tab.name)} onClick={() => { selectTab(tab.id); setViewMenu(null); }}>{tabTitle(tab.name)}</button>)}
+      </div>}
+    </nav>}
+    {publishedView && <div className="mobile-view-actions">
+      {(portal || tabs.length > 1) && <button type="button" aria-label={t(portal ? '切换报表' : '切换标签页')} aria-expanded={!!viewMenu} aria-controls={portal || viewMenu ? 'view-report-menu' : undefined} onClick={() => setViewMenu(current => current ? null : portal ? 'reports' : 'tabs')}><Icon name="report" /></button>}
+      {!offlineExport && <button type="button" className="mobile-report-share" aria-label={t('分享链接')} onClick={() => void shareViewingLink()}><Icon name="share" /></button>}
+    </div>}
     {showReports && !showSettings && <ReportsPage reports={dashboards} drafts={Object.keys(drafts)} onRestore={value => void open(value, false, true)} busy={isSaving || reportBusy || publishing || openingReport} onShare={async reportId => { try { await copyPublicReportLink(reportId); setMessage(t('\u62a5\u8868\u94fe\u63a5\u5df2\u590d\u5236')); } catch (error) { setMessage((error as Error).message); } }} onPublish={value => void publish(value)} onView={value => void viewReport(value)} onEdit={value => void open(value)} onPermission={value => { setPermissionReport(value); setShowReports(false); setShowSettings(false); setPanel('permissions'); navigateTo(modulePaths.permissions); }} onCopy={value => void copyReport(value)} onExport={value => void exportReport(value)} onImport={file => void importReport(file)} onDelete={report => setReportAction({ kind: 'delete', report })} onNew={newReport} />}
     {reportAction && <dialog ref={reportDialog} className="modal report-confirmation" aria-label={reportAction.kind === 'new' ? t('\u65b0\u5efa\u62a5\u8868') : t('\u5220\u9664\u62a5\u8868')} onCancel={event => { event.preventDefault(); if (!reportBusy) { setReportAction(null); navigateTo(activePath, true); } }}>
       <h2>{reportAction.kind === 'new' ? t('\u65b0\u5efa\u62a5\u8868') : t('\u5220\u9664\u62a5\u8868')}</h2>

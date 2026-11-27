@@ -159,6 +159,7 @@ if WEB_DIST.is_dir():
 
     @app.get('/reports/{report_id}', include_in_schema=False)
     @app.get('/view/{report_id}', include_in_schema=False)
+    @app.get('/portal/{report_id}', include_in_schema=False)
     def report_page(report_id: str):
         return FileResponse(WEB_DIST / 'index.html')
 
